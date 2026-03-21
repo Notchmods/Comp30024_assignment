@@ -86,7 +86,7 @@ def apply_eat(board_dict: dict, action: EatAction):
     attacker_stack = new_board.pop(action.coord)
     new_board[dest] = attacker_stack # replace blue
     return new_board
-
+    
 def apply_cascade(board_dict: dict, action):
     new_board = board_dict.copy()
 
@@ -109,11 +109,14 @@ def search(
         A list of actions (MoveAction, EatAction, or CascadeAction), or `None`
         if no solution is possible.
     """
+    queue=[]
+    
 
     # The render_board() function is handy for debugging. It will print out a
     # board state in a human-readable format. If your terminal supports ANSI
     # codes, set the `ansi` flag to True to print a colour-coded version!
     print(render_board(board, ansi=True))
+    print(board)
 
     # Do some impressive AI stuff here to find the solution...
     # ...
