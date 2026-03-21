@@ -4,6 +4,7 @@
 from .core import CellState, Coord, Direction, Action, MoveAction, EatAction, CascadeAction, PlayerColor
 from .utils import render_board
 from dataclasses import dataclass
+from collections import deque
 
 @dataclass(frozen=True)
 class GameState:
@@ -139,12 +140,34 @@ def search(
     # ...
     # ... (your solution goes here!)
     # ...
+    
+    # TODO: test with BFS to verify basic mechanics and handle simple test cases
+    # will be updated to A* with heuristic later
+    start_state = GameState.from_dict(board) # starting state
+    if start_state.is_goal(): # check blue tokens
+        return []
+
+    queue = deque([(start_state, [])])
+    visited = {start_state}
+
+    # BFS Loop
+    while queue:
+        current_state, path = queue.popleft()
+        # generate legal moves
+        for next_state, action in get_successors(current_state, PlayerColor.RED):
+            if next_state not in visited:
+                new_path = path + [action]
+                if next_state.is_goal(): # check goal state
+                    return new_path
+                visited.add(next_state)
+                queue.append((next_state, new_path))                
+    return None
 
     # Here we're returning "hardcoded" actions as an example of the expected
     # output format. Of course, you should instead return the result of your
     # search algorithm. Remember: if no solution is possible for a given input,
     # return `None` instead of a list.
-    return [
-            MoveAction(Coord(3, 3), Direction.Down),
-            EatAction(Coord(4, 3), Direction.Down),
-    ]
+    #return [
+    #        MoveAction(Coord(3, 3), Direction.Down),
+    #        EatAction(Coord(4, 3), Direction.Down),
+    #]
