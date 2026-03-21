@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from collections import deque
 import heapq
 from itertools import count
+import time
 
 @dataclass(frozen=True)
 class GameState:
@@ -74,10 +75,6 @@ def apply_eat(board_dict: dict, action: EatAction):
     
     new_board[dest] = attacker_stack # replace blue
     return new_board
-    
-def apply_cascade(board_dict: dict, action):
-    new_board = board_dict.copy()
-
 
 def apply_cascade(board_dict: dict, action: CascadeAction):
     cascading_stack = board_dict.get(action.coord)
@@ -171,6 +168,10 @@ def search(
     #heap consists of (f(n), tie_breaker ,g(n) , state, path)
     heapq.heappush(pq,(start_h,next(tie),0,start_state,[]))
 
+    # DEBUG
+    start_time = time.time()
+    nodes_expanded = 0
+
     #While there are still items within queue
     while pq:
         f,ti,g,current_state,path = heapq.heappop(pq)
@@ -179,8 +180,18 @@ def search(
         if g>best_g.get(current_state,float("inf")):
             continue
         
+        # DEBUG
+        nodes_expanded += 1
+
         #If the state is in the goal state then return the solutions
         if current_state.is_goal():
+            
+            # DEBUG
+            end_time = time.time()
+            print(f"Time taken: {end_time - start_time:.4f} seconds")
+            print(f"Nodes expanded: {nodes_expanded}")
+            print(f"Solution length: {len(path)} moves\n")
+
             return path
         
         #Iterate through successor states
@@ -198,6 +209,13 @@ def search(
                 #f(n)=g(n)+h(n)
                 new_f = new_g+ Heuristics(next_state)
                 heapq.heappush(pq,(new_f,next(tie),new_g,next_state,new_path))
+    
+    # DEBUG
+    end_time = time.time()
+    print(f"\nSEARCH FAILED")
+    print(f"Time taken: {end_time - start_time:.4f} seconds")
+    print(f"Nodes expanded: {nodes_expanded}\n")
+
     return  None
             
 
