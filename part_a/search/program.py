@@ -1,6 +1,7 @@
 # COMP30024 Artificial Intelligence, Semester 1 2026
 # Project Part A: Single Player Cascade
 
+
 from .core import CellState, Coord, Direction, Action, MoveAction, EatAction, CascadeAction, PlayerColor
 from .utils import render_board
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from collections import deque
 import heapq
 from itertools import count
 import time
+import math
 
 @dataclass(frozen=True)
 class GameState:
@@ -53,7 +55,8 @@ def get_successors(state: GameState, current_player: PlayerColor = PlayerColor.R
                 if cell.height >= 2:
                     cascade_act = CascadeAction(coord, direction)
                     new_b = apply_cascade(board_dict, cascade_act)
-                    if new_b: successors.append((GameState.from_dict(new_b), cascade_act))                    
+                    if new_b is not None and new_b != board_dict:
+                        successors.append((GameState.from_dict(new_b), cascade_act))                    
     return successors
 
 def apply_move(board_dict: dict, action: MoveAction):
@@ -171,6 +174,7 @@ def search(
     # DEBUG
     start_time = time.time()
     nodes_expanded = 0
+    
 
     #While there are still items within queue
     while pq:
@@ -180,12 +184,9 @@ def search(
         if g>best_g.get(current_state,float("inf")):
             continue
         
-        # DEBUG
-        nodes_expanded += 1
 
         #If the state is in the goal state then return the solutions
         if current_state.is_goal():
-            
             # DEBUG
             end_time = time.time()
             print(f"Time taken: {end_time - start_time:.4f} seconds")
@@ -198,7 +199,7 @@ def search(
         for next_state,action in get_successors(current_state,PlayerColor.RED):
             #Each action has cost of 1, so g(n)/ path cost increases by 1 
             new_g=g+1
-
+    
             #If new path cost is less than best path cost
             if new_g < best_g.get(next_state,float("inf")):
                 #Select this state
@@ -206,8 +207,13 @@ def search(
                 #Extend action sequence
                 new_path =path+[action]
 
+                #Skip dead states entirely
+                h=Heuristics(next_state)
+                if h== float("inf"):
+                    continue
+
                 #f(n)=g(n)+h(n)
-                new_f = new_g+ Heuristics(next_state)
+                new_f = new_g+ h
                 heapq.heappush(pq,(new_f,next(tie),new_g,next_state,new_path))
     
     # DEBUG
@@ -247,8 +253,13 @@ def search(
 #Manhattan distance calculator 
 def Manhattan_Distance(reds,blues):
     return abs(reds.r - blues.r)+abs(reds.c-blues.c)
-    
 
+
+#Euclidean distance calculator
+def Euclidean_Distance(reds,blues):
+    return math.sqrt(abs(math.pow(reds.r - blues.r,2))+abs(math.pow(reds.c-blues.c,2)))
+    
+#Gather opposing stacks and check their distances
 def Heuristics(state):
     reds=[]
     blues=[]
@@ -274,9 +285,9 @@ def Heuristics(state):
 
     #Check for the nearest blues from the reds
     for blue in blues:
-        nearest_steps= min(max(0,Manhattan_Distance(red,blue)-1) for red in reds)
+        nearest_steps= min(max(0,Euclidean_Distance(red,blue)-1) for red in reds)
 
-    #Return heuristic calculation
-    return nearest_steps
+    #Return heuristic calculation (Find the lesser steps/admissible heuristics)
+    return min(len(blues),nearest_steps)
 
     
