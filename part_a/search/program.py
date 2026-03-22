@@ -226,29 +226,6 @@ def search(
 
     return  None
 
-    # # BFS Loop
-    # while queue:
-    #     current_state, path = queue.popleft()
-    #     # generate legal moves
-    #     for next_state, action in get_successors(current_state, PlayerColor.RED):
-    #         if next_state not in visited:
-    #             new_path = path + [action]
-    #             if next_state.is_goal(): # check goal state
-    #                 return new_path
-    #             visited.add(next_state)
-    #             queue.append((next_state, new_path))              
-    # return None
-
-    # Here we're returning "hardcoded" actions as an example of the expected
-    # output format. Of course, you should instead return the result of your
-    # search algorithm. Remember: if no solution is possible for a given input,
-    # return `None` instead of a list.
-    #return [
-    #        MoveAction(Coord(3, 3), Direction.Down),
-    #        EatAction(Coord(4, 3), Direction.Down),
-    #]
-
-
 #Manhattan distance calculator 
 def Manhattan_Distance(reds,blues):
     return abs(reds.r - blues.r)+abs(reds.c-blues.c)
@@ -267,36 +244,6 @@ def Heuristics(state):
         if dist_to_closest_red > max_min_dist:
             max_min_dist = dist_to_closest_red        
     return max_min_dist
-
-#def Heuristics(state):
-    reds=[]
-    blues=[]
-    board_dict = state.to_dict() 
-
-    
-    #Gather amount of red and blues and their coordinates
-    for coord,cell in  board_dict.items():
-        if cell.color==PlayerColor.RED:
-            reds.append(coord)
-        
-        if cell.color == PlayerColor.BLUE:
-            blues.append(coord)
-
-    #If there's neither blue or red stacks left then game is over
-    if not blues:
-        return 0
-    
-    if not reds:
-        return 0
-    
-    nearest_steps=0
-
-    #Check for the nearest blues from the reds
-    for blue in blues:
-        nearest_steps= min(max(0,Manhattan_Distance(red,blue)-1) for red in reds)
-
-    #Return heuristic calculation
-    return nearest_steps
 
 def reconstruct_path(came_from, current_state):
     path = []
