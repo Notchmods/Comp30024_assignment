@@ -38,7 +38,7 @@ def get_successors(state: GameState, current_player: PlayerColor = PlayerColor.R
                 
                 # move
                 if dest not in board_dict or board_dict[dest].color == current_player:
-                    new_b = apply_move(board_dict, coord, dest)
+                    new_b = apply_move(board_dict, coord, dest) #New board state
                     move_act = MoveAction(coord, direction)
                     successors.append((GameState(frozenset(new_b.items())), move_act))
                     
@@ -49,12 +49,30 @@ def get_successors(state: GameState, current_player: PlayerColor = PlayerColor.R
                         eat_act = EatAction(coord, direction)
                         successors.append((GameState(frozenset(new_b.items())), eat_act))
                         
-                # cascade
-                if cell.height >= 2:
+                # Cascade
+                if cell.height >= 2 and blue_checks(board_dict,coord,direction,cell.height):
                     new_b = apply_cascade(board_dict, coord, direction, cell.height, cell.color) # type: ignore
-                    cascade_act = CascadeAction(coord, direction)
-                    successors.append((GameState(frozenset(new_b.items())), cascade_act))                    
+
+                    #Only add cascade action as a succesor if it's valid and changes theb oard
+                    if new_b is not None and new_b!=board_dict:
+                        cascade_act = CascadeAction(coord, direction)
+                        successors.append((GameState(frozenset(new_b.items())), cascade_act))                    
     return successors
+
+#Check if Cascade might help to reach blue stacks 
+def blue_checks(board_dict, coord, direction, height):
+    curr = coord #Red stack's current positions
+
+    #Check for blue stack within the stack height
+    for _ in range(height):
+        try:
+            curr = curr + direction #Step forward
+        except ValueError:
+            return False
+        #Check whether the square that it cascades to contain blue stacks   
+        if curr in board_dict and board_dict[curr].color == PlayerColor.BLUE:
+            return True
+    return False #Return if there's no blue square found
 
 def apply_move(board_dict: dict, coord: Coord, dest: Coord):
     new_board = board_dict.copy()
@@ -73,7 +91,8 @@ def apply_eat(board_dict: dict, coord: Coord, dest: Coord):
     new_board[dest] = attacker_stack # replace blue
     return new_board
 
-def apply_cascade(board_dict: dict, coord: Coord, direction: Direction, height: int, color: PlayerColor):    
+def apply_cascade(board_dict: dict, coord: Coord, direction: Direction, height: int, color: PlayerColor):   
+
     new_board = board_dict.copy()
     del new_board[coord]
     step_pos = coord # keep track of current position
@@ -175,7 +194,7 @@ def search(
         #If the state is in the goal state then return the solutions
         if current_state.is_goal():
             
-            # DEBUG
+            # DEBUG (Time taken and node expanded+ number of moves made)
             end_time = time.time()
             print(f"Time taken: {end_time - start_time:.4f} seconds")
             print(f"Nodes expanded: {nodes_expanded}")
@@ -241,13 +260,12 @@ def Heuristics(state):
     if not blues or not reds:
         return 0
     
-    # find the minimum distance required to reach the furthest blue stack
-    max_min_dist = 0
-    for blue in blues:
-        dist_to_closest_red = min(Manhattan_Distance(red, blue) for red in reds)
-        if dist_to_closest_red > max_min_dist:
-            max_min_dist = dist_to_closest_red        
-    return max_min_dist
+    # calculate the sum of the minimum distances to all blue pieces
+    total_dist = 0
+    for blue in blues: # find the closest red piece to the specific blue piece
+        dist_to_closest_red = min(max(0, Manhattan_Distance(red, blue) - 1) for red in reds)
+        total_dist += dist_to_closest_red        
+    return total_dist
 
 #def Heuristics(state):
     reds=[]
