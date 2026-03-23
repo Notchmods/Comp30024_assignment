@@ -232,17 +232,25 @@ def Manhattan_Distance(reds,blues):
     
 def Heuristics(state):
     # iterate directly on frozenset
-    reds = [coord for coord, cell in state.board if cell.color == PlayerColor.RED]
-    blues = [coord for coord, cell in state.board if cell.color == PlayerColor.BLUE]
+    reds = [(coord, cell) for coord, cell in state.board if cell.color == PlayerColor.RED]
+    blues = [(coord, cell) for coord, cell in state.board if cell.color == PlayerColor.BLUE]
     if not blues or not reds:
         return 0
     
     # find the minimum distance required to reach the furthest blue stack
     max_min_dist = 0
-    for blue in blues:
-        dist_to_closest_red = min(Manhattan_Distance(red, blue) for red in reds)
-        if dist_to_closest_red > max_min_dist:
-            max_min_dist = dist_to_closest_red        
+    for b_coord, b_cell in blues:
+        best_r_dist = float('inf')
+        for r_coord, r_cell in reds:
+            dist = Manhattan_Distance(r_coord,b_coord)
+            # act at least one extra merge if the red is too short to eat the blue
+            if r_cell.height < b_cell.height:
+                dist += 1 
+            if dist < best_r_dist:
+                best_r_dist = dist
+                
+        if best_r_dist > max_min_dist:
+            max_min_dist = best_r_dist             
     return max_min_dist
 
 def reconstruct_path(came_from, current_state):
