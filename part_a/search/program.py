@@ -4,7 +4,6 @@
 from .core import CellState, Coord, Direction, Action, MoveAction, EatAction, CascadeAction, PlayerColor
 from .utils import render_board
 from dataclasses import dataclass
-from collections import deque
 import heapq
 from itertools import count
 import time
@@ -25,103 +24,80 @@ class GameState:
     def is_goal(self):
         # no blue left
         return not any(cell.color == PlayerColor.BLUE for _, cell in self.board)
-    
+
 def get_successors(state: GameState, current_player: PlayerColor = PlayerColor.RED):
     successors = []
-    board_dict = dict(state.board) 
+    board_dict = state.to_dict() 
     
     for coord, cell in state.board:
         if cell.color == current_player:
             for direction in Direction: # dest safely
-                try: dest = coord + direction
-                except ValueError: continue
+                try: 
+                    dest = coord + direction
+                except ValueError: 
+                    continue
                 
-                # move
-                if dest not in board_dict or board_dict[dest].color == current_player:
-                    new_b = apply_move(board_dict, coord, dest) #New board state
-                    move_act = MoveAction(coord, direction)
-                    successors.append((GameState(frozenset(new_b.items())), move_act))
+                target = board_dict.get(dest)
+
+                # move & merge
+                if target is None or target.color == current_player:
+                    new_b = board_dict.copy()
+                    del new_b[coord]
+                    if target: # merge
+                        new_b[dest] = CellState(current_player, cell.height + target.height)
+                    else: # relocate
+                        new_b[dest] = cell
+                    successors.append((GameState.from_dict(new_b), MoveAction(coord, direction)))
                     
                 # eat
-                elif board_dict[dest].color != current_player:
-                    if cell.height >= board_dict[dest].height:
-                        new_b = apply_eat(board_dict, coord, dest)
-                        eat_act = EatAction(coord, direction)
-                        successors.append((GameState(frozenset(new_b.items())), eat_act))
+                elif target.color != current_player:
+                    if cell.height >= target.height:
+                        new_b = board_dict.copy()
+                        del new_b[coord]
+                        new_b[dest] = cell # replace blue
+                        successors.append((GameState.from_dict(new_b), EatAction(coord, direction)))
                         
-                # Cascade
-                if cell.height >= 2 and blue_checks(board_dict,coord,direction,cell.height):
-                    new_b = apply_cascade(board_dict, coord, direction, cell.height, cell.color) # type: ignore
+                # cascade
+                if cell.height >= 2:
+                     # check if cascade help to reach blue
+                    hit_something = False
+                    curr_scan = coord
+                    for _ in range(cell.height):
+                        try: curr_scan = curr_scan + direction
+                        except ValueError: break
+                        if curr_scan in board_dict:
+                            hit_something = True
+                            break
+                    
+                    if hit_something:
+                        new_b = board_dict.copy()
+                        del new_b[coord]
+                        step_pos = coord # keep track of current position
 
-                    #Only add cascade action as a succesor if it's valid and changes theb oard
-                    if new_b is not None and new_b!=board_dict:
-                        cascade_act = CascadeAction(coord, direction)
-                        successors.append((GameState(frozenset(new_b.items())), cascade_act))                    
+                        for _ in range(cell.height):
+                            try: step_pos = step_pos + direction
+                            except ValueError: break 
+                            
+                            # push stack
+                            curr = step_pos
+                            to_push = []
+                            while curr in new_b: # collect stacks in the cascade direction
+                                to_push.append((curr, new_b.pop(curr)))
+                                try: curr = curr + direction
+                                except ValueError: break # hit the board edge
+                                    
+                            for old_pos, stack in reversed(to_push): # move collected stacks one cell further
+                                try:
+                                    new_pos = old_pos + direction
+                                    new_b[new_pos] = stack
+                                except ValueError: pass
+                            new_b[step_pos] = CellState(current_player, 1)        
+                        
+                        # add cascade action as a succesor if valid and changes the board
+                        new_fs = frozenset(new_b.items())
+                        if new_fs != state.board:
+                            successors.append((GameState(new_fs), CascadeAction(coord, direction)))                    
     return successors
-
-#Check if Cascade might help to reach blue stacks 
-def blue_checks(board_dict, coord, direction, height):
-    curr = coord #Red stack's current positions
-
-    #Check for blue stack within the stack height
-    for _ in range(height):
-        try:
-            curr = curr + direction #Step forward
-        except ValueError:
-            return False
-        #Check whether the square that it cascades to contain blue stacks   
-        if curr in board_dict and board_dict[curr].color == PlayerColor.BLUE:
-            return True
-    return False #Return if there's no blue square found
-
-def apply_move(board_dict: dict, coord: Coord, dest: Coord):
-    new_board = board_dict.copy()
-    moving_stack = new_board.pop(coord)
-    
-    if dest in new_board: # merge
-        existing = new_board[dest]
-        new_board[dest] = CellState(moving_stack.color, moving_stack.height + existing.height)
-    else: # relocate
-        new_board[dest] = moving_stack
-    return new_board
-
-def apply_eat(board_dict: dict, coord: Coord, dest: Coord):
-    new_board = board_dict.copy()
-    attacker_stack = new_board.pop(coord)    
-    new_board[dest] = attacker_stack # replace blue
-    return new_board
-
-def apply_cascade(board_dict: dict, coord: Coord, direction: Direction, height: int, color: PlayerColor):   
-
-    new_board = board_dict.copy()
-    del new_board[coord]
-    step_pos = coord # keep track of current position
-
-    for _ in range(height):
-        try:
-            step_pos = step_pos + direction
-        except ValueError: # token falls off the board
-            break 
-        
-        # push stack
-        curr = step_pos
-        to_push = []
-        while curr in new_board: # collect stacks in the cascade direction
-            to_push.append((curr, new_board.pop(curr)))
-            try:
-                curr = curr + direction
-            except ValueError:
-                break # hit the board edge
-                
-        for old_pos, stack in reversed(to_push): # move collected stacks one cell further
-            try:
-                new_pos = old_pos + direction
-                new_board[new_pos] = stack
-            except ValueError:
-                pass
-        
-        new_board[step_pos] = CellState(color, 1)        
-    return new_board
 
 def search(
     board: dict[Coord, CellState]
@@ -156,13 +132,9 @@ def search(
 
     #Calculate Heuristic
 
-
-
-
     start_state = GameState.from_dict(board) # starting state
     if start_state.is_goal(): # check blue tokens
         return []
-    
 
     pq=[] #Use a priority queue instead (Min-heap edition)
     tie=count() #5Tie breaker to avoid comparison issues when total costs are equal
@@ -172,9 +144,9 @@ def search(
     best_g={start_state:0}
 
     #Heap items
-    start_h= Heuristics(start_state) #Get the heuristics for the start state
+    h, b_count = Heuristics(start_state) # Get the heuristics for the start state
     #heap consists of (f(n), tie_breaker ,g(n) , state, path)
-    heapq.heappush(pq,(start_h,next(tie),0,start_state))
+    heapq.heappush(pq, (h, b_count, h, next(tie), 0, start_state))
 
     # DEBUG
     start_time = time.time()
@@ -182,7 +154,7 @@ def search(
 
     #While there are still items within queue
     while pq:
-        f,ti,g,current_state = heapq.heappop(pq)
+        f, b_left, h_val, ti, g, current_state = heapq.heappop(pq)
 
         #If path costs > best path cost then ignore this state
         if g>best_g.get(current_state,float("inf")):
@@ -209,14 +181,18 @@ def search(
 
             #If new path cost is less than best path cost
             if new_g < best_g.get(next_state,float("inf")):
+                new_h, new_b_left = Heuristics(next_state)
+                if new_h == float('inf'):
+                    continue # prune dead ends
+
                 #Select this state
                 best_g[next_state]=new_g
                 #Extend action sequence
                 came_from[next_state] = (current_state, action)
-
+                
+                # prioritize clearing blues when f costs are tied
                 #f(n)=g(n)+h(n)
-                new_f = new_g+ Heuristics(next_state)
-                heapq.heappush(pq,(new_f,next(tie),new_g,next_state))
+                heapq.heappush(pq, (new_g + new_h, new_b_left, new_h, next(tie), new_g, next_state))
     
     # DEBUG
     end_time = time.time()
@@ -226,32 +202,40 @@ def search(
 
     return  None
 
-#Manhattan distance calculator 
-def Manhattan_Distance(reds,blues):
-    return abs(reds.r - blues.r)+abs(reds.c-blues.c)
-    
-def Heuristics(state):
-    # iterate directly on frozenset
-    reds = [(coord, cell) for coord, cell in state.board if cell.color == PlayerColor.RED]
-    blues = [(coord, cell) for coord, cell in state.board if cell.color == PlayerColor.BLUE]
-    if not blues or not reds:
-        return 0
-    
+def Heuristics(state: GameState):
+    reds = []
+    blues = []
+    for coord, cell in state.board:
+        if cell.color == PlayerColor.RED:
+            reds.append((coord, cell.height))
+        else:
+            blues.append(coord)
+    #  prune dead ends
+    if not blues: return 0, 0
+    if not reds: return float('inf'), len(blues) 
+        
     # find the minimum distance required to reach the furthest blue stack
-    max_min_dist = 0
-    for b_coord, b_cell in blues:
-        best_r_dist = float('inf')
-        for r_coord, r_cell in reds:
-            dist = Manhattan_Distance(r_coord,b_coord)
-            # act at least one extra merge if the red is too short to eat the blue
-            if r_cell.height < b_cell.height:
-                dist += 1 
-            if dist < best_r_dist:
-                best_r_dist = dist
-                
-        if best_r_dist > max_min_dist:
-            max_min_dist = best_r_dist             
-    return max_min_dist
+    max_min_moves = 0
+    for b in blues:
+        best_r_moves = float('inf')
+        for r_coord, r_height in reds:
+            dist = abs(r_coord.r - b.r) + abs(r_coord.c - b.c)
+            moves = (dist + r_height - 1)//r_height # divide by height to ensure cascade speed never overestimated
+            if moves < best_r_moves:
+                best_r_moves = moves
+        if best_r_moves > max_min_moves:
+            max_min_moves = best_r_moves
+            
+    # find how many blue exist that share no rows or columns
+    used_rows, used_cols = set(), set()
+    indep_blues = 0
+    for b in blues:
+        if b.r not in used_rows and b.c not in used_cols:
+            indep_blues += 1
+            used_rows.add(b.r)
+            used_cols.add(b.c)
+    # true cost includes at least travel distance or destruction actions
+    return max(max_min_moves, indep_blues), len(blues)
 
 def reconstruct_path(came_from, current_state):
     path = []
