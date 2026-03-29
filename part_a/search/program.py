@@ -6,7 +6,6 @@ from .utils import render_board
 from dataclasses import dataclass
 import heapq
 from itertools import count
-import time
 
 @dataclass(frozen=True)
 class GameState:
@@ -31,7 +30,7 @@ def get_successors(state: GameState, current_player: PlayerColor = PlayerColor.R
     
     for coord, cell in state.board:
         if cell.color == current_player:
-            for direction in Direction: # dest safely
+            for direction in Direction: # dest in board
                 try: 
                     dest = coord + direction
                 except ValueError: 
@@ -102,36 +101,7 @@ def get_successors(state: GameState, current_player: PlayerColor = PlayerColor.R
 def search(
     board: dict[Coord, CellState]
 ) -> list[Action] | None:
-    """
-    This is the entry point for your submission. You should modify this
-    function to solve the search problem discussed in the Part A specification.
-    See `core.py` for information on the types being used here.
-
-    Parameters:
-        `board`: a dictionary representing the initial board state, mapping
-            coordinates to `CellState` instances (each with a `.color` and
-            `.height` attribute).
-
-    Returns:
-        A list of actions (MoveAction, EatAction, or CascadeAction), or `None`
-        if no solution is possible.
-    """
-    
-
-    # The render_board() function is handy for debugging. It will print out a
-    # board state in a human-readable format. If your terminal supports ANSI
-    # codes, set the `ansi` flag to True to print a colour-coded version!
-    print(render_board(board, ansi=True))
-
-    # Do some impressive AI stuff here to find the solution...
-    # ...
-    # ... (your solution goes here!)
-    # ...
-
-    #A* search algorithm- With distance to blue stack as heuristics
-
-    #Calculate Heuristic
-
+    #A* search algorithm- With a combined heuristic of max-min travel distance and independent targets
     start_state = GameState.from_dict(board) # starting state
     if start_state.is_goal(): # check blue tokens
         return []
@@ -145,12 +115,8 @@ def search(
 
     #Heap items
     h, b_count = Heuristics(start_state) # Get the heuristics for the start state
-    #heap consists of (f(n), tie_breaker ,g(n) , state, path)
+    #heap consists of (f(n), blue_count, h(n), tie_breaker ,g(n), state)
     heapq.heappush(pq, (h, b_count, h, next(tie), 0, start_state))
-
-    # DEBUG
-    start_time = time.time()
-    nodes_expanded = 0
 
     #While there are still items within queue
     while pq:
@@ -159,19 +125,9 @@ def search(
         #If path costs > best path cost then ignore this state
         if g>best_g.get(current_state,float("inf")):
             continue
-        
-        # DEBUG
-        nodes_expanded += 1
 
         #If the state is in the goal state then return the solutions
         if current_state.is_goal():
-            
-            # DEBUG (Time taken and node expanded+ number of moves made)
-            end_time = time.time()
-            print(f"Time taken: {end_time - start_time:.4f} seconds")
-            print(f"Nodes expanded: {nodes_expanded}")
-            print(f"Solution length: {len(reconstruct_path(came_from, current_state))} moves\n")
-
             return reconstruct_path(came_from, current_state)
         
         #Iterate through successor states
@@ -193,12 +149,6 @@ def search(
                 # prioritize clearing blues when f costs are tied
                 #f(n)=g(n)+h(n)
                 heapq.heappush(pq, (new_g + new_h, new_b_left, new_h, next(tie), new_g, next_state))
-    
-    # DEBUG
-    end_time = time.time()
-    print(f"\nSEARCH FAILED")
-    print(f"Time taken: {end_time - start_time:.4f} seconds")
-    print(f"Nodes expanded: {nodes_expanded}\n")
 
     return  None
 
@@ -242,4 +192,4 @@ def reconstruct_path(came_from, current_state):
     while current_state in came_from:
         current_state, action = came_from[current_state]
         path.append(action)
-    return path[::-1] # reverse it to get start -> goal
+    return path[::-1] # reverse the path to return actions in the correct chronological order
