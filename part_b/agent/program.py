@@ -139,6 +139,19 @@ class Agent:
                 print("Testing: I am playing as RED (first player)")
             case PlayerColor.BLUE:
                 print("Testing: I am playing as BLUE")
+        
+        #Store board state and players color
+        self.color=color #Player's color
+        
+        #Store opponent's color
+        if(self.color==PlayerColor.BLUE): 
+            self.opponent=PlayerColor.RED
+        elif(self.color==PlayerColor.RED):
+            self.opponent=PlayerColor.BLUE
+
+
+        #Initialise game state
+        self.state = GameState(frozenset())
 
     def action(self, **referee: dict) -> Action:
         """
@@ -162,13 +175,13 @@ class Agent:
                     return PlaceAction(Coord(7, self._turn_count))
 
         # During play phase
-        match self._color:
-            case PlayerColor.RED:
-                print("Testing: RED is playing a MOVE action")
-                return MoveAction(Coord(0, 0), Direction.Down)
-            case PlayerColor.BLUE:
-                print("Testing: BLUE is playing a MOVE action")
-                return MoveAction(Coord(7, 0), Direction.Up)
+        # Generate sucessors of state (To be used in minmax)
+        successors= get_successors(self.state,self.color)
+
+        #pick a random move
+        next_state,action=successors[0]
+
+        return action
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
         """
@@ -177,6 +190,9 @@ class Agent:
         """
         if color == self._color:
             self._turn_count += 1
+
+        #Update game state
+        self.state = self.state.apply_action(color,action)
 
         # There are four possible action types: PLACE, MOVE, EAT, and CASCADE.
         # Below we check which type of action was played and print out the

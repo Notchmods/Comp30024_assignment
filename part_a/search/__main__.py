@@ -29,7 +29,7 @@ def parse_input(input: str) -> dict[Coord, CellState]:
             for c, cell_str in enumerate(line.split(",")):
                 cell_str = cell_str.strip()
                 if cell_str == "":
-                    continue
+                    continue 
                 if cell_str[0] in ("R", "r"):
                     color = PlayerColor.RED
                 elif cell_str[0] in ("B", "b"):
