@@ -3,11 +3,16 @@
 
 from referee.game import PlayerColor, Coord, Direction, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class GameState:
-    board: frozenset[tuple[Coord, tuple[PlayerColor, int]]] 
+    board: frozenset[tuple[Coord, tuple[PlayerColor, int]]]
+    player_to_move: PlayerColor = PlayerColor.RED
+    total_turn_count: int = 0
+    play_phase_turns: int = 0
+    # stores tuples of (board, player_to_move) for threefold
+    past_states: tuple[tuple[frozenset, PlayerColor], ...] = field(default_factory=tuple)
 
     def to_dict(self):
         # convert back to dict
@@ -18,19 +23,48 @@ class GameState:
         # create state from input
         return GameState(frozenset(board_dict.items()))
 
-    def is_terminal(self):
-        # checks if the game has ended via elimination
-        red_exists = False
-        blue_exists = False
-        for _, (color, _) in self.board:
-            if color == PlayerColor.RED:
-                red_exists = True
-            elif color == PlayerColor.BLUE:
-                blue_exists = True
-            if red_exists and blue_exists:
-                return False
-        # exit the loop when one of the colors is eliminated
-        return True
+    def is_terminal(self, no_legal_moves: bool = False): # checks the game ending conditions
+        # elimination
+        red_exists = any(color == PlayerColor.RED for _, (color, _) in self.board)
+        blue_exists = any(color == PlayerColor.BLUE for _, (color, _) in self.board)
+        if not red_exists or not blue_exists:
+            return True
+        
+        # threefold repitition
+        if self.play_phase_turns > 0:
+            current_state_key = (self.board, self.player_to_move)
+            # Count how many times this exact board + player combo has happened
+            if self.past_states.count(current_state_key) >= 2:
+                return True
+        
+        # stalemate
+        if no_legal_moves:
+            return True
+        
+        # turn limit
+        if self.play_phase_turns >= 300:
+            return True
+        return False
+    
+    def generate_next_state(self, new_board_dict: dict, next_player: PlayerColor):
+        # create the next GameState with updated counters and history
+        new_board_frozenset = frozenset(new_board_dict.items())
+        # calculate new turn counters
+        new_total_turns = self.total_turn_count + 1
+        new_play_turns = self.play_phase_turns + 1 if new_total_turns > 8 else 0
+
+        # update history
+        new_past_states = self.past_states
+        if new_play_turns > 0:
+            current_state_key = (self.board, self.player_to_move)
+            new_past_states = self.past_states + (current_state_key,)
+        return GameState(
+            board=new_board_frozenset,
+            player_to_move=next_player,
+            total_turn_count=new_total_turns,
+            play_phase_turns=new_play_turns,
+            past_states=new_past_states
+        )
     
     @staticmethod
     def apply_move(b: dict, src: Coord, dest: Coord, color: PlayerColor):
@@ -82,11 +116,43 @@ class GameState:
                 self.apply_cascade(b, coord, direction, color)
         return GameState.from_dict(b)
 
-def get_successors(state: GameState, current_player: PlayerColor = PlayerColor.RED):
+def get_successors(state: GameState, current_player: PlayerColor):
+    board_dict = state.to_dict()
+    opponent = PlayerColor.BLUE if current_player == PlayerColor.RED else PlayerColor.RED
+    successors = []
+
+    # placement phase logic
+    if state.total_turn_count < 8:
+        # precalculate opponent coordinates for adjacency checks
+        opponent_coords = {coord for coord, (color, _) in state.board if color == opponent}
+        for r in range(8):
+            for c in range(8):
+                coord = Coord(r, c)
+                if coord not in board_dict: # place on an empty cell
+                    is_valid = True
+                    
+                    # adjacency restriction apply after the first turn of the game
+                    if state.total_turn_count > 0:
+                        for direction in Direction:
+                            try:
+                                adj_coord = coord + direction
+                                if adj_coord in opponent_coords:
+                                    is_valid = False
+                                    break
+                            except ValueError:
+                                pass # edge of the board
+                    if is_valid:
+                        new_b = board_dict.copy()
+                        new_b[coord] = (current_player, 3) # place a stack of height 3
+                        # generate next state
+                        next_state = state.generate_next_state(new_b, opponent)
+                        successors.append((next_state, PlaceAction(coord)))
+        return successors
+
+    # play phase logic
     eat_moves = []
     cascade_moves = []
     normal_moves = []
-    board_dict = state.to_dict()
 
     for coord, (color, height) in state.board:
         if color != current_player:
@@ -103,21 +169,23 @@ def get_successors(state: GameState, current_player: PlayerColor = PlayerColor.R
             if target is None or target[0] == current_player:
                 new_b = board_dict.copy()
                 GameState.apply_move(new_b, coord, dest, current_player)
-                normal_moves.append((GameState.from_dict(new_b), MoveAction(coord, direction)))
+                next_state = state.generate_next_state(new_b, opponent)
+                normal_moves.append((next_state, MoveAction(coord, direction)))
                 
             # eat
             elif target[0] != current_player and height >= target[1]: # must be an enemy stack, height >= enemy
                 new_b = board_dict.copy()
                 GameState.apply_eat(new_b, coord, dest)
-                eat_moves.append((GameState.from_dict(new_b), EatAction(coord, direction)))
+                next_state = state.generate_next_state(new_b, opponent)
+                eat_moves.append((next_state, EatAction(coord, direction)))
                     
             # cascade
             if height >= 2: # height >= 2
                 new_b = board_dict.copy()
                 GameState.apply_cascade(new_b, coord, direction, current_player)
-                new_fs = frozenset(new_b.items())
-                if new_fs != state.board: # add the cascade action only if it changed the board
-                    cascade_moves.append((GameState(new_fs), CascadeAction(coord, direction)))                    
+                if new_b != board_dict: 
+                    next_state = state.generate_next_state(new_b, opponent)
+                    cascade_moves.append((next_state, CascadeAction(coord, direction)))                    
     # return in order for alpha-beta pruning
     return eat_moves + cascade_moves + normal_moves
 
