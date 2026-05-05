@@ -3,7 +3,123 @@
 
 from referee.game import PlayerColor, Coord, Direction, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction
+from dataclasses import dataclass
 
+@dataclass(frozen=True)
+class GameState:
+    board: frozenset[tuple[Coord, tuple[PlayerColor, int]]] 
+
+    def to_dict(self):
+        # convert back to dict
+        return dict(self.board)
+
+    @staticmethod
+    def from_dict(board_dict: dict[Coord, tuple[PlayerColor, int]]):
+        # create state from input
+        return GameState(frozenset(board_dict.items()))
+
+    def is_terminal(self):
+        # checks if the game has ended via elimination
+        red_exists = False
+        blue_exists = False
+        for _, (color, _) in self.board:
+            if color == PlayerColor.RED:
+                red_exists = True
+            elif color == PlayerColor.BLUE:
+                blue_exists = True
+            if red_exists and blue_exists:
+                return False
+        # exit the loop when one of the colors is eliminated
+        return True
+    
+    @staticmethod
+    def apply_move(b: dict, src: Coord, dest: Coord, color: PlayerColor):
+        stack = b.pop(src)
+        if dest in b:
+            b[dest] = (color, stack[1] + b[dest][1]) # merge
+        else:
+            b[dest] = stack # relocate
+
+    @staticmethod
+    def apply_eat(b: dict, src: Coord, dest: Coord):
+        b[dest] = b.pop(src) # eat
+
+    @staticmethod
+    def apply_cascade(b: dict, src: Coord, direction: Direction, color: PlayerColor):
+        _, height = b.pop(src)
+        step = src
+        for _ in range(height):
+            try: 
+                step = step + direction
+            except ValueError: 
+                break 
+            
+            curr = step
+            to_push = []
+            # collect all stacks in the way
+            while curr in b:
+                to_push.append((curr, b.pop(curr)))
+                try: curr = curr + direction
+                except ValueError: break 
+                
+            # push
+            for old_pos, stack in reversed(to_push):
+                try: b[old_pos + direction] = stack
+                except ValueError: pass 
+            b[step] = (color, 1)
+
+    def apply_action(self, color: PlayerColor, action: Action):
+        # used by update() to track the real game
+        b = self.to_dict()
+        match action:
+            case PlaceAction(coord):
+                b[coord] = (color, 3)
+            case MoveAction(coord, direction):
+                self.apply_move(b, coord, coord + direction, color)
+            case EatAction(coord, direction):
+                self.apply_eat(b, coord, coord + direction)
+            case CascadeAction(coord, direction):
+                self.apply_cascade(b, coord, direction, color)
+        return GameState.from_dict(b)
+
+def get_successors(state: GameState, current_player: PlayerColor = PlayerColor.RED):
+    eat_moves = []
+    cascade_moves = []
+    normal_moves = []
+    board_dict = state.to_dict()
+
+    for coord, (color, height) in state.board:
+        if color != current_player:
+            continue
+        
+        for direction in Direction:
+            try: 
+                dest = coord + direction
+            except ValueError:
+                continue # edge of the board
+            
+            target = board_dict.get(dest)
+            # move & merge
+            if target is None or target[0] == current_player:
+                new_b = board_dict.copy()
+                GameState.apply_move(new_b, coord, dest, current_player)
+                normal_moves.append((GameState.from_dict(new_b), MoveAction(coord, direction)))
+                
+            # eat
+            elif target[0] != current_player and height >= target[1]: # must be an enemy stack, height >= enemy
+                new_b = board_dict.copy()
+                GameState.apply_eat(new_b, coord, dest)
+                eat_moves.append((GameState.from_dict(new_b), EatAction(coord, direction)))
+                    
+            # cascade
+            if height >= 2: # height >= 2
+                new_b = board_dict.copy()
+                GameState.apply_cascade(new_b, coord, direction, current_player)
+                new_fs = frozenset(new_b.items())
+                if new_fs != state.board: # add the cascade action only if it changed the board
+                    cascade_moves.append((GameState(new_fs), CascadeAction(coord, direction)))                    
+    # return in order for alpha-beta pruning
+    return eat_moves + cascade_moves + normal_moves
 
 class Agent:
     """
