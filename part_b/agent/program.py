@@ -233,6 +233,7 @@ class Agent:
         # technique(s) to determine the best action to take.
 
         # During placement phase (first 8 turns total, 4 per player)
+        # TODO: repace with minimax/alpha-beta search
         if self._turn_count < 4:
             match self._color:
                 case PlayerColor.RED:
@@ -283,3 +284,49 @@ class Agent:
                 print(f"  Direction: {direction}")
             case _:
                 raise ValueError(f"Unknown action type: {action}")
+            
+def evaluation(state: GameState, color: PlayerColor):
+    # a temporary simple heuristic evaluation function
+    my_tokens = 0
+    opponent_tokens = 0
+    for _, (cell_color, height) in state.board:
+        if cell_color == color:
+            my_tokens += height
+        else:
+            opponent_tokens += height
+    return float(my_tokens - opponent_tokens)
+
+def minimax(state: GameState, depth: int, maximizing_player: bool, agent_color: PlayerColor):
+    # a basic minimax search
+    successors = get_successors(state, state.player_to_move) # fetch successors
+    if state.is_terminal(no_legal_moves=len(successors) == 0): # check if the game is over
+        red_exists = any(color == PlayerColor.RED for _, (color, _) in state.board)
+        blue_exists = any(color == PlayerColor.BLUE for _, (color, _) in state.board)
+        
+        # elimination
+        if red_exists and not blue_exists:
+            return float('inf') if agent_color == PlayerColor.RED else float('-inf')
+        elif blue_exists and not red_exists:
+            return float('inf') if agent_color == PlayerColor.BLUE else float('-inf')
+        
+        # draw or turn limit conditions
+        if state.play_phase_turns >= 300:
+            return evaluation(state, agent_color) 
+        else: # stalemate or threefold repetition
+            return 0.0 
+
+    if depth == 0: # reach depth limit
+        return evaluation(state, agent_color)
+
+    if maximizing_player: # recursive
+        max_eval = float('-inf')
+        for next_state, _ in successors:
+            eval_score = minimax(next_state, depth - 1, False, agent_color)
+            max_eval = max(max_eval, eval_score)
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for next_state, _ in successors:
+            eval_score = minimax(next_state, depth - 1, True, agent_color)
+            min_eval = min(min_eval, eval_score)
+        return min_eval
