@@ -247,13 +247,22 @@ class Agent:
                     return PlaceAction(Coord(7, self._turn_count))
 
         # During play phase
-        # Generate sucessors of state (To be used in minmax)
-        successors= get_successors(self.state,self.color)
+        # Generate successors of state (To be used in minimax)
+        successors = get_successors(self.state, self.color)
 
-        #pick a random move
-        next_state,action=successors[0]
+        #Get the first successor
+        best_action=successors[0][1]
 
-        return action
+        best_val=0
+
+        #Search next state to determine best course of action
+        for next_state in successors:
+            value=minimax(next_state[0], 2, False, self.color) # depth 2 minimax
+            if value>best_val:
+                best_val=value
+                best_action=self.action
+            return best_action
+
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
         """
@@ -299,14 +308,14 @@ def evaluation(state: GameState, color: PlayerColor):
             opponent_tokens += height
     return float(my_tokens - opponent_tokens)
 
-def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor):
-    # a minimax search with alpha-beta pruning
+def minimax(state: GameState, depth: int, maximizing_player: bool, agent_color: PlayerColor):
+    # a basic minimax search
     successors = get_successors(state, state.player_to_move) # fetch successors
     if state.is_terminal(no_legal_moves=len(successors) == 0): # check if the game is over
         red_exists = any(color == PlayerColor.RED for _, (color, _) in state.board)
         blue_exists = any(color == PlayerColor.BLUE for _, (color, _) in state.board)
         
-        # absolute win/loss values for elimination
+        # elimination
         if red_exists and not blue_exists:
             return float('inf') if agent_color == PlayerColor.RED else float('-inf')
         elif blue_exists and not red_exists:
@@ -321,21 +330,15 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
     if depth == 0: # reach depth limit
         return evaluation(state, agent_color)
 
-    if maximizing_player: # recursive with pruning
+    if maximizing_player: # recursive
         max_eval = float('-inf')
         for next_state, _ in successors:
-            eval_score = minimax(next_state, depth - 1, alpha, beta, False, agent_color)
+            eval_score = minimax(next_state, depth - 1, False, agent_color)
             max_eval = max(max_eval, eval_score)
-            alpha = max(alpha, eval_score)
-            if beta <= alpha: # beta cutoff
-                break
         return max_eval
     else:
         min_eval = float('inf')
         for next_state, _ in successors:
-            eval_score = minimax(next_state, depth - 1, alpha, beta, True, agent_color)
+            eval_score = minimax(next_state, depth - 1, True, agent_color)
             min_eval = min(min_eval, eval_score)
-            beta = min(beta, eval_score)
-            if beta <= alpha: # alpha cutoff
-                break
         return min_eval
