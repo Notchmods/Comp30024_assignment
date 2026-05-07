@@ -154,12 +154,15 @@ def get_successors(state: GameState, current_player: PlayerColor):
     cascade_moves = []
     normal_moves = []
 
+    #Check stack and its height in the board
     for coord, (color, height) in state.board:
         if color != current_player:
             continue
         
+        #Get each direction that the board is trying to go to.
         for direction in Direction:
             try: 
+                #Calculate destination
                 dest = coord + direction
             except ValueError:
                 continue # edge of the board
