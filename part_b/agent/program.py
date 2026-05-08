@@ -4,6 +4,8 @@
 from referee.game import PlayerColor, Coord, Direction, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction
 from dataclasses import dataclass, field
+import time
+import math
 
 @dataclass(frozen=True)
 class GameState:
@@ -114,7 +116,8 @@ class GameState:
                 self.apply_eat(b, coord, coord + direction)
             case CascadeAction(coord, direction):
                 self.apply_cascade(b, coord, direction, color)
-        return GameState.from_dict(b)
+        next_player = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
+        return self.generate_next_state(b, next_player)
 
 def get_successors(state: GameState, current_player: PlayerColor):
     board_dict = state.to_dict()
@@ -133,7 +136,7 @@ def get_successors(state: GameState, current_player: PlayerColor):
                     
                     # adjacency restriction apply after the first turn of the game
                     if state.total_turn_count > 0:
-                        for direction in Direction:
+                        for direction in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
                             try:
                                 adj_coord = coord + direction
                                 if adj_coord in opponent_coords:
@@ -160,7 +163,7 @@ def get_successors(state: GameState, current_player: PlayerColor):
             continue
         
         #Get each direction that the board is trying to go to.
-        for direction in Direction:
+        for direction in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
             try: 
                 #Calculate destination
                 dest = coord + direction
@@ -205,6 +208,7 @@ class Agent:
         """
         self._color = color
         self._turn_count = 0
+        self.time_used = 0.0
         match color:
             case PlayerColor.RED:
                 print("Testing: I am playing as RED (first player)")
@@ -235,34 +239,24 @@ class Agent:
         # the initial moves of the game, so you should use some game playing
         # technique(s) to determine the best action to take.
 
-        # During placement phase (first 8 turns total, 4 per player)
-        # TODO: repace with minimax/alpha-beta search
-        if self._turn_count < 4:
-            match self._color:
-                case PlayerColor.RED:
-                    print("Testing: RED is playing a PLACE action")
-                    return PlaceAction(Coord(0, self._turn_count))
-                case PlayerColor.BLUE:
-                    print("Testing: BLUE is playing a PLACE action")
-                    return PlaceAction(Coord(7, self._turn_count))
-
-        # During play phase
-        # Generate successors of state (To be used in minimax)
+        turn_start_time = time.time()
+        # During placement phase (first 8 turns total, 4 per player) & play phase
         successors = get_successors(self.state, self.color)
-
-        #Get the first successor
-        best_action=successors[0][1]
-
-        best_val=0
-
-        #Search next state to determine best course of action
-        for next_state in successors:
-            value=minimax(next_state[0], 2, False, self.color) # depth 2 minimax
-            if value>best_val:
-                best_val=value
-                best_action=self.action
-            return best_action
-
+        if not successors:
+            raise ValueError("Stalemate: No legal moves available")
+        
+        # search game tree to find the best legal move
+        SEARCH_DEPTH = 3
+        _, best_action = minimax(self.state, SEARCH_DEPTH, float('-inf'), float('inf'), True, self.color)
+        
+        if best_action is None: # callback if every move leads to a forced loss
+            best_action = successors[0][1] #Get the first successor
+        
+        turn_end_time = time.time()
+        elapsed_time = turn_end_time - turn_start_time
+        self.time_used += elapsed_time
+        print(f"[{self.color}] Turn {self._turn_count} took {elapsed_time:.3f}s (Total time used: {self.time_used:.3f}s)")
+        return best_action
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
         """
@@ -308,8 +302,11 @@ def evaluation(state: GameState, color: PlayerColor):
             opponent_tokens += height
     return float(my_tokens - opponent_tokens)
 
-def minimax(state: GameState, depth: int, maximizing_player: bool, agent_color: PlayerColor):
-    # a basic minimax search
+def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor):
+    # a minimax search with alpha-beta pruning
+    if depth == 0: # depth limit check to avoid expensive successor generation at leaf nodes
+        return evaluation(state, agent_color), None
+   
     successors = get_successors(state, state.player_to_move) # fetch successors
     if state.is_terminal(no_legal_moves=len(successors) == 0): # check if the game is over
         red_exists = any(color == PlayerColor.RED for _, (color, _) in state.board)
@@ -317,28 +314,39 @@ def minimax(state: GameState, depth: int, maximizing_player: bool, agent_color: 
         
         # elimination
         if red_exists and not blue_exists:
-            return float('inf') if agent_color == PlayerColor.RED else float('-inf')
+            return (float('inf') if agent_color == PlayerColor.RED else float('-inf')), None
         elif blue_exists and not red_exists:
-            return float('inf') if agent_color == PlayerColor.BLUE else float('-inf')
+            return (float('inf') if agent_color == PlayerColor.BLUE else float('-inf')), None
         
         # draw or turn limit conditions
         if state.play_phase_turns >= 300:
-            return evaluation(state, agent_color) 
+            return evaluation(state, agent_color), None 
         else: # stalemate or threefold repetition
-            return 0.0 
+            return 0.0, None 
 
-    if depth == 0: # reach depth limit
-        return evaluation(state, agent_color)
-
-    if maximizing_player: # recursive
+    best_action = successors[0][1]
+    if maximizing_player: # recursive alpha-beta search
         max_eval = float('-inf')
-        for next_state, _ in successors:
-            eval_score = minimax(next_state, depth - 1, False, agent_color)
-            max_eval = max(max_eval, eval_score)
-        return max_eval
+        for next_state, action in successors:
+            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, False, agent_color)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_action = action
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha: # beta cutoff
+                break
+        return max_eval, best_action
+        
     else:
         min_eval = float('inf')
-        for next_state, _ in successors:
-            eval_score = minimax(next_state, depth - 1, True, agent_color)
-            min_eval = min(min_eval, eval_score)
-        return min_eval
+        for next_state, action in successors:
+            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, True, agent_color)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_action = action
+                
+            beta = min(beta, eval_score)
+            if beta <= alpha: # alpha cutoff
+                break
+        return min_eval, best_action
