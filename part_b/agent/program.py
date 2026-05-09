@@ -260,7 +260,7 @@ class Agent:
             value=minimax(next_state[0], 2, False, self.color) # depth 2 minimax
             if value>best_val:
                 best_val=value
-                best_action=self.action
+                best_action=next_state[1]
             return best_action
 
 
@@ -298,15 +298,83 @@ class Agent:
                 raise ValueError(f"Unknown action type: {action}")
             
 def evaluation(state: GameState, color: PlayerColor):
-    # a temporary simple heuristic evaluation function
-    my_tokens = 0
-    opponent_tokens = 0
-    for _, (cell_color, height) in state.board:
+    
+
+    #Determine the players and opponents
+    if color == PlayerColor.RED:
+        opponent=PlayerColor.BLUE
+    else:
+        opponent=PlayerColor.RED
+    
+    #Evaluation metrics
+    opponent=0
+
+    height=0
+    opponent_height=0
+    stacks=0
+    opponent_stacks=0
+    eating_moves=0
+    opponent_eat_moves=0
+    mobility=0
+    opponent_mobility=0
+    vulnerable_stacks=0
+    opponent_vulnerable=0
+
+    board=state.to_dict()
+
+    #Check every stacks within the board and evaluate based on the metrics
+    for coord, (cell_color, stack_height) in state.board:
         if cell_color == color:
-            my_tokens += height
+            height += stack_height
+            stacks += 1
+            mobility += len(get_successors(state, color))
+            if stack_height >= 2:
+                vulnerable_stacks += 1
         else:
-            opponent_tokens += height
-    return float(my_tokens - opponent_tokens)
+            opponent_height += stack_height
+            opponent_stacks += 1
+            opponent_mobility += len(get_successors(state, opponent))
+            if stack_height >= 2:
+                opponent_vulnerable += 1
+
+        #Check for mobility and eat opportunities
+        for direction in Direction:
+            try:
+                dest = coord + direction
+            except ValueError:
+                continue # edge of the board
+            
+            
+            target=board.get(dest)
+            
+            #For mobility, try to find adjacent squares
+            if target is None or target[0]== cell_color:
+                if cell_color == color:
+                    mobility += 1
+                else:
+                    opponent_mobility += 1
+            
+            #For eat opportunities, check if the stack can eat an opponent's stack
+            elif target[0]!=cell_color:
+                target_color,target_height=target
+                if height>target_height and target_color == color:
+                    eating_moves += 1
+                    opponent_vulnerable += 1
+                else:
+                    opponent_eat_moves += 1
+                    vulnerable_stacks += 1
+        
+            
+        
+    score=(
+        10*(stack_height-opponent_height)+
+        25*(stack_height-opponent_stacks)+
+        5*(mobility-opponent_mobility)+
+        40*(eating_moves-opponent_eat_moves)-
+        30*(vulnerable_stacks-opponent_vulnerable)
+    )
+
+    return float(score)
 
 def minimax(state: GameState, depth: int, maximizing_player: bool, agent_color: PlayerColor):
     # a basic minimax search
@@ -342,3 +410,12 @@ def minimax(state: GameState, depth: int, maximizing_player: bool, agent_color: 
             eval_score = minimax(next_state, depth - 1, True, agent_color)
             min_eval = min(min_eval, eval_score)
         return min_eval
+
+
+
+
+
+                
+                
+
+    
