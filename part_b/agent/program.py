@@ -291,7 +291,8 @@ class Agent:
                 print(f"  Direction: {direction}")
             case _:
                 raise ValueError(f"Unknown action type: {action}")
-            
+
+#Weighted evaluation
 def evaluation(state: GameState, color: PlayerColor):
 
     #Determine the players and opponents
@@ -312,6 +313,9 @@ def evaluation(state: GameState, color: PlayerColor):
     vulnerable_stacks=0
     opponent_vulnerable=0
 
+    cascade_potential=0
+    enemy_cascade_potential=0
+
     #Store board state
     board=state.to_dict() 
 
@@ -322,12 +326,12 @@ def evaluation(state: GameState, color: PlayerColor):
             height += stack_height
             stacks += 1
             if stack_height >= 2:
-                vulnerable_stacks += 1
+                vulnerable_stacks += stack_height
         else:
             opponent_height += stack_height
             opponent_stacks += 1
             if stack_height >= 2:
-                opponent_vulnerable += 1
+                opponent_vulnerable += stack_height 
 
         #Check mobility by counting adjacent empty of friendly cells
         for direction in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
@@ -347,10 +351,10 @@ def evaluation(state: GameState, color: PlayerColor):
             
             
             elif target[0]!=cell_color:
-                target_color,target_height=target
+                target_height=target[1]
 
                 #For eat opportunities, check if the stacks are threatened by opponents stacks
-                if stack_height>target_height and cell_color == color:
+                if stack_height>=target_height and cell_color == color:
                     eating_moves += 1
                     opponent_vulnerable += 1
                 else:
@@ -359,13 +363,22 @@ def evaluation(state: GameState, color: PlayerColor):
         
             
     #Calculate the final score based on the evaluation metrics with assigned weights (TBD)
-    score=(
-        10*(height-opponent_height)+
-        25*(stacks-opponent_stacks)+
-        5*(mobility-opponent_mobility)+
-        40*(eating_moves-opponent_eat_moves)-
-        30*(vulnerable_stacks-opponent_vulnerable)
-    )
+    if state.total_turn_count<8:
+        #Placement phase
+        score=(
+            10*(height-opponent_height)+
+            25*(stacks-opponent_stacks)+
+            5*(mobility-opponent_mobility)
+        )
+    else:
+        #During play phase 
+        score=(
+            8*(height-opponent_height)+
+            20*(stacks-opponent_stacks)+
+            5*(mobility-opponent_mobility)+
+            15*(eating_moves-opponent_eat_moves)-
+            35*(vulnerable_stacks-opponent_vulnerable)
+        )
 
     return float(score)
 
