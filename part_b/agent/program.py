@@ -36,8 +36,10 @@ class GameState:
         # threefold repitition
         if self.play_phase_turns > 0:
             current_state_key = (self.board, self.player_to_move)
+            past_dict=dict(self.past_states)
+
             # Count how many times this exact board + player combo has happened
-            if self.past_states.count(current_state_key) >= 2:
+            if past_dict.get(current_state_key,0) >= 2:
                 return True
         
         # stalemate
@@ -60,7 +62,9 @@ class GameState:
         new_past_states = self.past_states
         if new_play_turns > 0:
             current_state_key = (self.board, self.player_to_move)
-            new_past_states = self.past_states + (current_state_key,)
+            past_dict = dict(self.past_states)
+            past_dict[current_state_key] = past_dict.get(current_state_key, 0) + 1
+            new_past_states = tuple(past_dict.items())
         return GameState(
             board=new_board_frozenset,
             player_to_move=next_player,
@@ -125,6 +129,11 @@ def get_successors(state: GameState, current_player: PlayerColor):
     opponent = PlayerColor.BLUE if current_player == PlayerColor.RED else PlayerColor.RED
     successors = []
 
+    # play phase logic
+    eat_moves = []
+    cascade_moves = []
+    normal_moves = []
+
     # placement phase logic
     if state.total_turn_count < 8:
         # precalculate opponent coordinates for adjacency checks
@@ -152,11 +161,6 @@ def get_successors(state: GameState, current_player: PlayerColor):
                         next_state = state.generate_next_state(new_b, opponent)
                         successors.append((next_state, PlaceAction(coord)))
         return successors
-
-    # play phase logic
-    eat_moves = []
-    cascade_moves = []
-    normal_moves = []
 
     #Check stack and its height in the board
     for coord, (color, height) in state.board:
@@ -239,19 +243,36 @@ class Agent:
         # the agent is playing as BLUE or RED. Obviously this won't work beyond
         # the initial moves of the game, so you should use some game playing
         # technique(s) to determine the best action to take.
+        TIME_LIMIT=1.0 #Lower limit 
 
         turn_start_time = time.time()
-        # During placement phase (first 8 turns total, 4 per player) & play phase
+
+        #Clear transposition table to save memory
+        transposition_table.clear() 
+
+        # During placement phase
         successors = get_successors(self.state, self.color)
         if not successors:
             raise ValueError("Stalemate: No legal moves available")
         
         # search game tree to find the best legal move
-        SEARCH_DEPTH = 3
-        _, best_action = minimax(self.state, SEARCH_DEPTH, float('-inf'), float('inf'), True, self.color)
+        SEARCH_DEPTH = 1
+        while True:
+            elapsed_time = time.time() - turn_start_time
+            if elapsed_time >= TIME_LIMIT:
+                break
         
-        if best_action is None: # callback if every move leads to a forced loss
-            best_action = successors[0][1] #Get the first successor
+            score, action = minimax(self.state, SEARCH_DEPTH, float('-inf'), float('inf'), True, self.color,
+                                     deadline=turn_start_time + TIME_LIMIT)
+            # Callback if every move leads to a forced loss
+            if action is not None: 
+                best_action = action #Get the first successor
+
+            #If we find a winning move, stop searching
+            if score in (float('inf'), float('-inf')):
+                break
+        
+            SEARCH_DEPTH+=1
         
         turn_end_time = time.time()
         elapsed_time = turn_end_time - turn_start_time
@@ -382,10 +403,25 @@ def evaluation(state: GameState, color: PlayerColor):
 
     return float(score)
 
-def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor):
+#Memoization table storing previously evaluated state
+transposition_table={} 
+
+
+def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, 
+            agent_color: PlayerColor,deadline=None):
+
+     #If time has ran out bail the game out
+    if deadline and time.time()>=deadline:
+        return evaluation(state, agent_color), None
+    
     # a minimax search with alpha-beta pruning
     if depth == 0: # depth limit check to avoid expensive successor generation at leaf nodes
         return evaluation(state, agent_color), None
+
+    key=(state.board, state.player_to_move,depth)
+
+    if key in transposition_table:
+        return transposition_table[key]
    
     successors = get_successors(state, state.player_to_move) # fetch successors
     if state.is_terminal(no_legal_moves=len(successors) == 0): # check if the game is over
@@ -408,7 +444,7 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
     if maximizing_player: # recursive alpha-beta search
         max_eval = float('-inf')
         for next_state, action in successors:
-            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, False, agent_color)
+            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, False, agent_color,deadline)
             if eval_score > max_eval:
                 max_eval = eval_score
                 best_action = action
@@ -416,12 +452,13 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             alpha = max(alpha, eval_score)
             if beta <= alpha: # beta cutoff
                 break
+        transposition_table[key] = (max_eval, best_action)
         return max_eval, best_action
         
     else:
         min_eval = float('inf')
         for next_state, action in successors:
-            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, True, agent_color)
+            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, True, agent_color,deadline)
             if eval_score < min_eval:
                 min_eval = eval_score
                 best_action = action
@@ -429,4 +466,7 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             beta = min(beta, eval_score)
             if beta <= alpha: # alpha cutoff
                 break
-        return min_eval, best_action
+    
+    transposition_table[key]=(min_eval, best_action)
+
+    return min_eval, best_action
