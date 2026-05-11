@@ -20,6 +20,19 @@ POSITION_WEIGHTS = [
     [ 0,  1,  2,  2,  2,  2,  1,  0]
 ]
 
+# maps a Coord to a list of valid (Direction, adjacent_Coord) tuples
+VALID_ADJACENT = {}
+for r in range(8):
+    for c in range(8):
+        coord = Coord(r, c)
+        VALID_ADJACENT[coord] = []
+        for d in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
+            try:
+                dest = coord + d
+                VALID_ADJACENT[coord].append((d, dest))
+            except ValueError:
+                pass
+
 class GameState:
     def __init__(self, board: dict, player_to_move: PlayerColor = PlayerColor.RED, total_turn_count: int = 0, play_phase_turns: int = 0):
         self.board = board  # standard dictionary: {Coord: (PlayerColor, height)}
@@ -29,10 +42,11 @@ class GameState:
 
     def is_terminal(self, no_legal_moves: bool = False):
         # elimination
-        red_exists = any(color == PlayerColor.RED for color, _ in self.board.values())
-        blue_exists = any(color == PlayerColor.BLUE for color, _ in self.board.values())
-        if not red_exists or not blue_exists:
-            return True
+        if self.total_turn_count >= 8:
+            red_exists = any(color == PlayerColor.RED for color, _ in self.board.values())
+            blue_exists = any(color == PlayerColor.BLUE for color, _ in self.board.values())
+            if not red_exists or not blue_exists:
+                return True
         
         # stalemate
         if no_legal_moves:
@@ -119,14 +133,10 @@ def get_successors(state: GameState, current_player: PlayerColor):
                 if coord not in board_dict:
                     is_valid = True
                     if state.total_turn_count > 0:
-                        for direction in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
-                            try:
-                                adj_coord = coord + direction
-                                if adj_coord in opponent_coords:
-                                    is_valid = False
-                                    break
-                            except ValueError:
-                                pass
+                        for _, adj_coord in VALID_ADJACENT[coord]:
+                            if adj_coord in opponent_coords:
+                                is_valid = False
+                                break
                     if is_valid:
                         new_b = board_dict.copy()
                         new_b[coord] = (current_player, 3)
@@ -143,12 +153,7 @@ def get_successors(state: GameState, current_player: PlayerColor):
         if color != current_player:
             continue
         
-        for direction in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
-            try: 
-                dest = coord + direction
-            except ValueError:
-                continue 
-            
+        for direction, dest in VALID_ADJACENT[coord]:
             target = board_dict.get(dest)            
             # move & merge
             if target is None or target[0] == current_player:
@@ -182,9 +187,10 @@ class Agent:
         self.time_used = 0.0
         print(f"Testing: I am playing as {self.color.name}")
         self.state = GameState({}) # initialize with empty dict
+        self.state_history = {} # track history
 
     def action(self, **referee: dict) -> Action:
-        turn_start_time = time.time()
+        turn_start_time = time.process_time()
         time_rem = referee.get("time_remaining")
         space_rem = referee.get("space_remaining")
         space_limit = referee.get("space_limit")
@@ -202,7 +208,7 @@ class Agent:
         if not successors:
             raise ValueError("Stalemate: No legal moves available")
         
-        TURN_TIME_LIMIT = 2.0 # time management
+        TURN_TIME_LIMIT = max(0.1, min(2.0, time_rem*0.05)) # time management
         end_time = turn_start_time + TURN_TIME_LIMIT
         best_action = successors[0][1]
         best_score = 0.0  # track the score of the depth
@@ -221,7 +227,7 @@ class Agent:
         except TimeoutException:
             pass
         
-        turn_end_time = time.time()
+        turn_end_time = time.process_time()
         elapsed_time = turn_end_time - turn_start_time
         self.time_used += elapsed_time
         final_depth = current_depth - 1 if current_depth > 1 else 1
@@ -236,6 +242,10 @@ class Agent:
             self._turn_count += 1
         # update internal board with the moves
         self.state = self.state.apply_action(color, action)
+        if self.state.play_phase_turns > 0: # log gamestate to history
+            board_hash = frozenset(self.state.board.items())
+            key = (board_hash, self.state.player_to_move)
+            self.state_history[key] = self.state_history.get(key, 0) + 1
 
 def evaluation(state: GameState, color: PlayerColor):
     opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
@@ -254,15 +264,11 @@ def evaluation(state: GameState, color: PlayerColor):
             my_pos_score += (pos_multiplier*effective_height)
             # enemy threat detection
             is_threatened = False
-            for d in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
-                try:
-                    adj_coord = coord + d
-                    adj_piece = state.board.get(adj_coord)
-                    if adj_piece is not None and adj_piece[0] == opponent and adj_piece[1] >= height:
-                        is_threatened = True
-                        break 
-                except ValueError:
-                    continue 
+            for _, adj_coord in VALID_ADJACENT[coord]:
+                adj_piece = state.board.get(adj_coord)
+                if adj_piece is not None and adj_piece[0] == opponent and adj_piece[1] >= height:
+                    is_threatened = True
+                    break
             if is_threatened:
                 my_pos_score -= (height*THREAT_PENALTY)
         else:
@@ -273,21 +279,21 @@ def evaluation(state: GameState, color: PlayerColor):
 
 def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor, end_time: float):
     # a minimax search with alpha-beta pruning
-    if time.time() >= end_time:
+    if time.process_time() >= end_time:
         raise TimeoutException()
     if depth == 0: # depth limit check to avoid expensive successor generation at leaf nodes
         return evaluation(state, agent_color), None
     
     successors = get_successors(state, state.player_to_move) # fetch successors
     if state.is_terminal(no_legal_moves=len(successors) == 0): # check if the game is over
-        red_exists = any(color == PlayerColor.RED for color, _ in state.board.values())
-        blue_exists = any(color == PlayerColor.BLUE for color, _ in state.board.values())
-        
-        # elimination
-        if red_exists and not blue_exists:
-            return (float('inf') if agent_color == PlayerColor.RED else float('-inf')), None
-        elif blue_exists and not red_exists:
-            return (float('inf') if agent_color == PlayerColor.BLUE else float('-inf')), None
+        if state.total_turn_count >= 8:
+            red_exists = any(color == PlayerColor.RED for color, _ in state.board.values())
+            blue_exists = any(color == PlayerColor.BLUE for color, _ in state.board.values())
+            # elimination
+            if red_exists and not blue_exists:
+                return (float('inf') if agent_color == PlayerColor.RED else float('-inf')), None
+            elif blue_exists and not red_exists:
+                return (float('inf') if agent_color == PlayerColor.BLUE else float('-inf')), None
         
         # draw or turn limit conditions
         if state.play_phase_turns >= 300:
@@ -318,4 +324,4 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             beta = min(beta, eval_score)
             if beta <= alpha: # alpha cutoff
                 break
-        return min_eval, best_action    
+        return min_eval, best_action
