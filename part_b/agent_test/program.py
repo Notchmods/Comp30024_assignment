@@ -318,4 +318,4 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             beta = min(beta, eval_score)
             if beta <= alpha: # alpha cutoff
                 break
-        return min_eval, best_action
+        return min_eval, best_action    
