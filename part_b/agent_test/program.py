@@ -77,13 +77,11 @@ def current_repetition_count(state):
     return state.history.get(state_key, 0)
 
 def transposition_key(state, agent_color):
-    return (
-        zobrist_hash(state),
-        agent_color,
-        state.total_turn_count,
-        state.play_phase_turns,
-        current_repetition_count(state),
-    )
+    h = zobrist_hash(state)
+    is_placement = state.total_turn_count < 8
+    turn_limit_risk = state.play_phase_turns if state.play_phase_turns > 280 else 0
+    rep_count = current_repetition_count(state)
+    return (h, agent_color, is_placement, turn_limit_risk, rep_count)
 
 class GameState:
     def __init__(self, board: dict, player_to_move: PlayerColor = PlayerColor.RED, total_turn_count: int = 0, play_phase_turns: int = 0, history: dict = None):
