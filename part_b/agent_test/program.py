@@ -274,8 +274,6 @@ class Agent:
         if not successors:
             raise ValueError("Stalemate: No legal moves available")
         
-        if len(TRANSPOSITION_TABLE) > MAX_TRANSPOSITION_ENTRIES:
-            TRANSPOSITION_TABLE.clear()
         TURN_TIME_LIMIT = max(0.1, min(2.0, time_rem*0.05)) # time management
         end_time = turn_start_time + TURN_TIME_LIMIT
         best_action = successors[0][1]
@@ -452,6 +450,11 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
     else:
         flag = EXACT
 
-    if len(TRANSPOSITION_TABLE) < MAX_TRANSPOSITION_ENTRIES:
+    old_entry = TRANSPOSITION_TABLE.get(tt_key)
+    if old_entry is None:
+        if len(TRANSPOSITION_TABLE) >= MAX_TRANSPOSITION_ENTRIES:
+            TRANSPOSITION_TABLE.pop(next(iter(TRANSPOSITION_TABLE)))
+        TRANSPOSITION_TABLE[tt_key] = (depth, best_score, flag, best_action)
+    elif depth >= old_entry[0]:
         TRANSPOSITION_TABLE[tt_key] = (depth, best_score, flag, best_action)
     return best_score, best_action
