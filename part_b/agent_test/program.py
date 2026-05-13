@@ -274,7 +274,8 @@ class Agent:
         if not successors:
             raise ValueError("Stalemate: No legal moves available")
         
-        TRANSPOSITION_TABLE.clear()
+        if len(TRANSPOSITION_TABLE) > MAX_TRANSPOSITION_ENTRIES:
+            TRANSPOSITION_TABLE.clear()
         TURN_TIME_LIMIT = max(0.1, min(2.0, time_rem*0.05)) # time management
         end_time = turn_start_time + TURN_TIME_LIMIT
         best_action = successors[0][1]
@@ -310,34 +311,65 @@ class Agent:
         # update internal board with the moves
         self.state = self.state.apply_action(color, action)
 
+MATERIAL_WEIGHT = 15.0
+POSITION_WEIGHT = 1.0
+THREAT_PENALTY = 8.0
+ATTACK_BONUS = 4.0
+ENDGAME_ATTACK_BONUS = 10.0
+RED_ENDGAME_CHASE_BONUS = 1.0
+BLUE_ENDGAME_CHASE_BONUS = 3.0
 def evaluation(state: GameState, color: PlayerColor):
     opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
-    my_material, opp_material = 0, 0
-    my_pos_score, opp_pos_score = 0, 0
-    MATERIAL_WEIGHT = 15.0  
-    POSITION_WEIGHT = 1.0
-    THREAT_PENALTY = 8.0 
-
-    for coord, (piece_color, height) in state.board.items():
+    my_material = opp_material = 0
+    my_pos_score = opp_pos_score = 0.0
+    attack_score = 0.0
+    board = state.board
+    my_stacks = []
+    opp_stacks = []
+    for coord, (piece_color, height) in board.items():
         r, c = coord.r, coord.c
         effective_height = min(height, 5)
-        pos_multiplier = POSITION_WEIGHTS[r][c]
+        position_value = POSITION_WEIGHTS[r][c] * effective_height
         if piece_color == color:
             my_material += height
-            my_pos_score += (pos_multiplier*effective_height)
-            # enemy threat detection
-            is_threatened = False
+            my_stacks.append((coord, height))
+            my_pos_score += position_value
             for _, adj_coord in VALID_ADJACENT[coord]:
-                adj_piece = state.board.get(adj_coord)
+                adj_piece = board.get(adj_coord)
                 if adj_piece is not None and adj_piece[0] == opponent and adj_piece[1] >= height:
-                    is_threatened = True
+                    my_pos_score -= height * THREAT_PENALTY
                     break
-            if is_threatened:
-                my_pos_score -= (height*THREAT_PENALTY)
         else:
             opp_material += height
-            opp_pos_score += (pos_multiplier*effective_height)
-    score = ((my_material - opp_material)*MATERIAL_WEIGHT) + ((my_pos_score - opp_pos_score)*POSITION_WEIGHT)
+            opp_stacks.append((coord, height))
+            opp_pos_score += position_value
+            for _, adj_coord in VALID_ADJACENT[coord]:
+                adj_piece = board.get(adj_coord)
+                if adj_piece is not None and adj_piece[0] == color and adj_piece[1] >= height:
+                    attack_score += height
+                    break
+
+    if state.total_turn_count < 8:
+        score = (
+            MATERIAL_WEIGHT * (my_material - opp_material) +
+            POSITION_WEIGHT * (my_pos_score - opp_pos_score)
+        )
+    else:
+        score = (
+            MATERIAL_WEIGHT * (my_material - opp_material) +
+            POSITION_WEIGHT * (my_pos_score - opp_pos_score) +
+            ATTACK_BONUS * attack_score
+        )
+        if my_material >= opp_material + 2 and opp_material <= 2 and opp_stacks:
+            chase_score = 0.0
+            for opp_coord, opp_height in opp_stacks:
+                closest_distance = min(
+                    abs(my_coord.r - opp_coord.r) + abs(my_coord.c - opp_coord.c)
+                    for my_coord, _ in my_stacks
+                )
+                chase_score += max(0, 8 - closest_distance) * opp_height
+            chase_bonus = RED_ENDGAME_CHASE_BONUS if color == PlayerColor.RED else BLUE_ENDGAME_CHASE_BONUS
+            score += ENDGAME_ATTACK_BONUS * attack_score + chase_bonus * chase_score
     return float(score)
 
 def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor, end_time: float):
