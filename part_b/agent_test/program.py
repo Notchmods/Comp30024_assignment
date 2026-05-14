@@ -21,6 +21,12 @@ POSITION_WEIGHTS = [
     [ 0,  1,  2,  2,  2,  2,  1,  0]
 ]
 
+POSITION_BY_COORD = {
+    Coord(r, c): POSITION_WEIGHTS[r][c]
+    for r in range(8)
+    for c in range(8)
+}
+
 # maps a Coord to a list of valid (Direction, adjacent_Coord) tuples
 VALID_ADJACENT = {}
 for r in range(8):
@@ -324,6 +330,7 @@ THREAT_PENALTY = 8.0
 ATTACK_BONUS = 4.0
 CASCADE_REACH_WEIGHT = 0.5
 ENDGAME_ATTACK_BONUS = 10.0
+ENDGAME_POSITION_WEIGHT = 0.3
 RED_ENDGAME_CHASE_BONUS = 1.0
 BLUE_ENDGAME_CHASE_BONUS = 3.0
 def evaluation(state: GameState, color: PlayerColor):
@@ -333,16 +340,18 @@ def evaluation(state: GameState, color: PlayerColor):
     attack_score = 0.0
     my_cascade_reach = opp_cascade_reach = 0.0
     board = state.board
+    is_play_phase = state.total_turn_count >= 8
     my_coords = []
     opp_stacks = []
     for coord, (piece_color, height) in board.items():
-        r, c = coord.r, coord.c
         effective_height = min(height, 5)
-        position_value = POSITION_WEIGHTS[r][c]*effective_height
+        position_value = POSITION_BY_COORD[coord]*effective_height
         if piece_color == color:
             my_material += height
-            my_coords.append(coord)
             my_pos_score += position_value
+            if not is_play_phase:
+                continue
+            my_coords.append(coord)
             # check enemy stacks this stack could pressure with a cascade
             if height >= 2:
                 for direction, _ in VALID_ADJACENT[coord]:
@@ -359,8 +368,10 @@ def evaluation(state: GameState, color: PlayerColor):
                     break
         else:
             opp_material += height
-            opp_stacks.append((coord, height))
             opp_pos_score += position_value
+            if not is_play_phase:
+                continue
+            opp_stacks.append((coord, height))
             # count enemy cascade pressure against our stacks
             if height >= 2:
                 for direction, _ in VALID_ADJACENT[coord]:
@@ -376,7 +387,9 @@ def evaluation(state: GameState, color: PlayerColor):
                     attack_score += height
                     break
 
-    if state.total_turn_count < 8:
+    is_endgame = (is_play_phase and my_material >= opp_material + 2 and opp_material <= 2 and opp_stacks)
+    current_position_weight = ENDGAME_POSITION_WEIGHT if is_endgame else POSITION_WEIGHT
+    if not is_play_phase:
         score = (
             MATERIAL_WEIGHT*(my_material - opp_material) +
             POSITION_WEIGHT*(my_pos_score - opp_pos_score)
@@ -384,12 +397,12 @@ def evaluation(state: GameState, color: PlayerColor):
     else:
         score = (
             MATERIAL_WEIGHT*(my_material - opp_material) +
-            POSITION_WEIGHT*(my_pos_score - opp_pos_score) +
+            current_position_weight*(my_pos_score - opp_pos_score) +
             ATTACK_BONUS*attack_score +
             CASCADE_REACH_WEIGHT*(my_cascade_reach - opp_cascade_reach)
         )
         # chase the remaining enemy stacks at endgame phase
-        if my_material >= opp_material + 2 and opp_material <= 2 and opp_stacks:
+        if is_endgame:
             chase_score = 0.0
             for opp_coord, opp_height in opp_stacks:
                 closest_distance = min(
