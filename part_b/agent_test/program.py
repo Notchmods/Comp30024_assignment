@@ -50,7 +50,7 @@ for coord in VALID_ADJACENT:
 # transposition table with zobrist hashing
 ZOBRIST_RANDOM = random.Random(30024)
 MAX_ZOBRIST_HEIGHT = 32
-MAX_TRANSPOSITION_ENTRIES = 50_000
+MAX_TRANSPOSITION_ENTRIES = 100_000
 EXACT, LOWER_BOUND, UPPER_BOUND = 0, 1, 2
 WIN_SCORE = 100000.0
 ZOBRIST_STACK = {
@@ -76,10 +76,7 @@ def zobrist_hash(state):
             # This should not occur in normal Cascade play, but keeps hashing
             # deterministic if an unusual merged stack ever appears.
             h ^= ZOBRIST_OVERFLOW ^ (
-                (coord.r + 1) * 1_000_003 ^
-                (coord.c + 1) * 97_409 ^
-                (color.value + 1) * 65_537 ^
-                height * 257
+                (coord.r + 1)*1_000_003^(coord.c + 1)*97_409^(color.value + 1)*65_537^height*257
             )
     return h
 
@@ -260,7 +257,6 @@ def get_successors(state: GameState, current_player: PlayerColor):
 class Agent:
     def __init__(self, color: PlayerColor, **referee: dict):
         self.color = color
-        self.opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
         self._turn_count = 0
         self.time_used = 0.0
         print(f"Testing: I am playing as {self.color.name}")
@@ -337,16 +333,17 @@ def evaluation(state: GameState, color: PlayerColor):
     attack_score = 0.0
     my_cascade_reach = opp_cascade_reach = 0.0
     board = state.board
-    my_stacks = []
+    my_coords = []
     opp_stacks = []
     for coord, (piece_color, height) in board.items():
         r, c = coord.r, coord.c
         effective_height = min(height, 5)
-        position_value = POSITION_WEIGHTS[r][c] * effective_height
+        position_value = POSITION_WEIGHTS[r][c]*effective_height
         if piece_color == color:
             my_material += height
-            my_stacks.append((coord, height))
+            my_coords.append(coord)
             my_pos_score += position_value
+            # check enemy stacks this stack could pressure with a cascade
             if height >= 2:
                 for direction, _ in VALID_ADJACENT[coord]:
                     for distance, ray_coord in enumerate(VALID_RAYS[(coord, direction)], start=1):
@@ -354,16 +351,17 @@ def evaluation(state: GameState, color: PlayerColor):
                             break
                         ray_piece = board.get(ray_coord)
                         if ray_piece is not None and ray_piece[0] == opponent:
-                            my_cascade_reach += ray_piece[1] / distance
+                            my_cascade_reach += ray_piece[1]/distance
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
                 if adj_piece is not None and adj_piece[0] == opponent and adj_piece[1] >= height:
-                    my_pos_score -= height * THREAT_PENALTY
+                    my_pos_score -= height*THREAT_PENALTY
                     break
         else:
             opp_material += height
             opp_stacks.append((coord, height))
             opp_pos_score += position_value
+            # count enemy cascade pressure against our stacks
             if height >= 2:
                 for direction, _ in VALID_ADJACENT[coord]:
                     for distance, ray_coord in enumerate(VALID_RAYS[(coord, direction)], start=1):
@@ -371,7 +369,7 @@ def evaluation(state: GameState, color: PlayerColor):
                             break
                         ray_piece = board.get(ray_coord)
                         if ray_piece is not None and ray_piece[0] == color:
-                            opp_cascade_reach += ray_piece[1] / distance
+                            opp_cascade_reach += ray_piece[1]/distance
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
                 if adj_piece is not None and adj_piece[0] == color and adj_piece[1] >= height:
@@ -380,26 +378,27 @@ def evaluation(state: GameState, color: PlayerColor):
 
     if state.total_turn_count < 8:
         score = (
-            MATERIAL_WEIGHT * (my_material - opp_material) +
-            POSITION_WEIGHT * (my_pos_score - opp_pos_score)
+            MATERIAL_WEIGHT*(my_material - opp_material) +
+            POSITION_WEIGHT*(my_pos_score - opp_pos_score)
         )
     else:
         score = (
-            MATERIAL_WEIGHT * (my_material - opp_material) +
-            POSITION_WEIGHT * (my_pos_score - opp_pos_score) +
-            ATTACK_BONUS * attack_score +
-            CASCADE_REACH_WEIGHT * (my_cascade_reach - opp_cascade_reach)
+            MATERIAL_WEIGHT*(my_material - opp_material) +
+            POSITION_WEIGHT*(my_pos_score - opp_pos_score) +
+            ATTACK_BONUS*attack_score +
+            CASCADE_REACH_WEIGHT*(my_cascade_reach - opp_cascade_reach)
         )
+        # chase the remaining enemy stacks at endgame phase
         if my_material >= opp_material + 2 and opp_material <= 2 and opp_stacks:
             chase_score = 0.0
             for opp_coord, opp_height in opp_stacks:
                 closest_distance = min(
                     abs(my_coord.r - opp_coord.r) + abs(my_coord.c - opp_coord.c)
-                    for my_coord, _ in my_stacks
+                    for my_coord in my_coords
                 )
-                chase_score += max(0, 8 - closest_distance) * opp_height
+                chase_score += max(0, 8 - closest_distance)*opp_height
             chase_bonus = RED_ENDGAME_CHASE_BONUS if color == PlayerColor.RED else BLUE_ENDGAME_CHASE_BONUS
-            score += ENDGAME_ATTACK_BONUS * attack_score + chase_bonus * chase_score
+            score += ENDGAME_ATTACK_BONUS*attack_score + chase_bonus*chase_score
     return float(score)
 
 def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor, end_time: float):
