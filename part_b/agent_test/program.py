@@ -34,6 +34,19 @@ for r in range(8):
             except ValueError:
                 pass
 
+VALID_RAYS = {}
+for coord in VALID_ADJACENT:
+    for d in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
+        ray = []
+        step = coord
+        while True:
+            try:
+                step = step + d
+                ray.append(step)
+            except ValueError:
+                break
+        VALID_RAYS[(coord, d)] = tuple(ray)
+
 # transposition table with zobrist hashing
 ZOBRIST_RANDOM = random.Random(30024)
 MAX_ZOBRIST_HEIGHT = 32
@@ -313,6 +326,7 @@ MATERIAL_WEIGHT = 15.0
 POSITION_WEIGHT = 1.0
 THREAT_PENALTY = 8.0
 ATTACK_BONUS = 4.0
+CASCADE_REACH_WEIGHT = 0.5
 ENDGAME_ATTACK_BONUS = 10.0
 RED_ENDGAME_CHASE_BONUS = 1.0
 BLUE_ENDGAME_CHASE_BONUS = 3.0
@@ -321,6 +335,7 @@ def evaluation(state: GameState, color: PlayerColor):
     my_material = opp_material = 0
     my_pos_score = opp_pos_score = 0.0
     attack_score = 0.0
+    my_cascade_reach = opp_cascade_reach = 0.0
     board = state.board
     my_stacks = []
     opp_stacks = []
@@ -332,6 +347,14 @@ def evaluation(state: GameState, color: PlayerColor):
             my_material += height
             my_stacks.append((coord, height))
             my_pos_score += position_value
+            if height >= 2:
+                for direction, _ in VALID_ADJACENT[coord]:
+                    for distance, ray_coord in enumerate(VALID_RAYS[(coord, direction)], start=1):
+                        if distance > height:
+                            break
+                        ray_piece = board.get(ray_coord)
+                        if ray_piece is not None and ray_piece[0] == opponent:
+                            my_cascade_reach += ray_piece[1] / distance
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
                 if adj_piece is not None and adj_piece[0] == opponent and adj_piece[1] >= height:
@@ -341,6 +364,14 @@ def evaluation(state: GameState, color: PlayerColor):
             opp_material += height
             opp_stacks.append((coord, height))
             opp_pos_score += position_value
+            if height >= 2:
+                for direction, _ in VALID_ADJACENT[coord]:
+                    for distance, ray_coord in enumerate(VALID_RAYS[(coord, direction)], start=1):
+                        if distance > height:
+                            break
+                        ray_piece = board.get(ray_coord)
+                        if ray_piece is not None and ray_piece[0] == color:
+                            opp_cascade_reach += ray_piece[1] / distance
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
                 if adj_piece is not None and adj_piece[0] == color and adj_piece[1] >= height:
@@ -356,7 +387,8 @@ def evaluation(state: GameState, color: PlayerColor):
         score = (
             MATERIAL_WEIGHT * (my_material - opp_material) +
             POSITION_WEIGHT * (my_pos_score - opp_pos_score) +
-            ATTACK_BONUS * attack_score
+            ATTACK_BONUS * attack_score +
+            CASCADE_REACH_WEIGHT * (my_cascade_reach - opp_cascade_reach)
         )
         if my_material >= opp_material + 2 and opp_material <= 2 and opp_stacks:
             chase_score = 0.0
