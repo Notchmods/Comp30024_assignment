@@ -252,7 +252,7 @@ def evaluation(state: GameState, color: PlayerColor, seen_pos: dict = None):
     my_stack_count, opp_stack_count = 0, 0
 
     MATERIAL_WEIGHT = 15.0  
-    POSITION_WEIGHT = 1.0
+    POSITION_WEIGHT = 5.0
     THREAT_PENALTY = 15.0
     REPETITION_PENALTY=200.0
 
