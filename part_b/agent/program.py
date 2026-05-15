@@ -300,7 +300,7 @@ def evaluation(state: GameState, color: PlayerColor, seen_pos: dict = None):
     
     #For dynamic game progression
     turns_remaining = max(0, 300 - state.play_phase_turns)
-    elimination_pressure = (1.0 / (opp_stack_count + 1)) * (turns_remaining / 300.0) * 200.0
+    elimination_pressure = (1.0 / (opp_stack_count + 1)) * (1.0 + state.play_phase_turns / 300.0) * 200.0   
 
     #material+position+threat+elimination pressure evaluation
     score = (
@@ -323,7 +323,7 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
     if time.time() >= end_time:
         raise TimeoutException()
     if depth == 0: # depth limit check to avoid expensive successor generation at leaf nodes
-        return evaluation(state, agent_color,seen_pos), None
+        return evaluation(state, agent_color,seen_pos)*0.05,None
     
     successors = get_successors(state, state.player_to_move) # fetch successors
     if state.is_terminal(no_legal_moves=len(successors) == 0): # check if the game is over
