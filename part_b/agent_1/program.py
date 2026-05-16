@@ -182,7 +182,6 @@ class Agent:
         self.time_used = 0.0
         print(f"Testing: I am playing as {self.color.name}")
         self.state = GameState({}) # initialize with empty dict
-        self.seen_positions={}
 
     def action(self, **referee: dict) -> Action:
         turn_start_time = time.time()
@@ -211,7 +210,7 @@ class Agent:
         
         try: # iterative deepening loop
             while True:
-                score, current_best_action = minimax(self.state, current_depth, float('-inf'), float('inf'), True, self.color, end_time,seen_pos=self.seen_positions)
+                score, current_best_action = minimax(self.state, current_depth, float('-inf'), float('inf'), True, self.color, end_time)
                 if current_best_action is not None: # lock in the best move & score
                     best_action = current_best_action
                     best_score = score
@@ -234,15 +233,9 @@ class Agent:
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
         if color == self.color:
-            self._turn_count += 1
+            self._turn_count += 1   
         # update internal board with the moves
         self.state = self.state.apply_action(color, action)
-
-        #Get key value for seen staet
-        board_key=frozenset(self.state.board.items())
-
-        self.seen_positions[board_key]=self.seen_positions.get(board_key,0)+1   
-
 
 def evaluation(state: GameState, color: PlayerColor, seen_pos: dict = None):
     opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
@@ -252,9 +245,8 @@ def evaluation(state: GameState, color: PlayerColor, seen_pos: dict = None):
     my_stack_count, opp_stack_count = 0, 0
 
     MATERIAL_WEIGHT = 15.0  
-    POSITION_WEIGHT = 5.0
-    THREAT_PENALTY = 15.0
-    REPETITION_PENALTY=200.0
+    POSITION_WEIGHT = 1.0
+    THREAT_PENALTY = 8.0
 
 
     for coord, (piece_color, height) in state.board.items():
@@ -299,31 +291,22 @@ def evaluation(state: GameState, color: PlayerColor, seen_pos: dict = None):
                 opp_threat_score -= (height * THREAT_PENALTY)  # opponent penalised for being threatened
     
     #For dynamic game progression
-    turns_remaining = max(0, 300 - state.play_phase_turns)
     elimination_pressure = (1.0 / (opp_stack_count + 1)) * (1.0 + state.play_phase_turns / 300.0) * 200.0   
 
     #material+position+threat+elimination pressure evaluation
     score = (
         ((my_material - opp_material)*MATERIAL_WEIGHT) + 
         ((my_pos_score - opp_pos_score)*POSITION_WEIGHT)+
-        (opp_threat_score - my_threat_score)+
          elimination_pressure )
-    
-    #Penalize repetitive movements (Used to prevent draws especially later in the games)
-    if seen_pos is not None:
-        board_key=frozenset(state.board.items())
-        repeat_count=seen_pos.get(board_key,0)
-        score-=repeat_count*REPETITION_PENALTY
 
     return float(score)
 
-def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor, end_time: float,
-            seen_pos= None):
+def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor, end_time: float):
     # a minimax search with alpha-beta pruning
     if time.time() >= end_time:
         raise TimeoutException()
     if depth == 0: # depth limit check to avoid expensive successor generation at leaf nodes
-        return evaluation(state, agent_color,seen_pos)*0.05,None
+        return evaluation(state, agent_color), None
     
     successors = get_successors(state, state.player_to_move) # fetch successors
     if state.is_terminal(no_legal_moves=len(successors) == 0): # check if the game is over
@@ -341,12 +324,12 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             return evaluation(state, agent_color), None 
         else: # stalemate or threefold repetition
             return 0.0, None 
-    
+
     best_action = successors[0][1]
     if maximizing_player: # recursive alpha-beta search
         max_eval = float('-inf')
         for next_state, action in successors:
-            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, False, agent_color, end_time,seen_pos=seen_pos)
+            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, False, agent_color, end_time)
             if eval_score > max_eval:
                 max_eval = eval_score
                 best_action = action
@@ -358,7 +341,7 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
     else:
         min_eval = float('inf')
         for next_state, action in successors:
-            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, True, agent_color, end_time,seen_pos=seen_pos)
+            eval_score, _ = minimax(next_state, depth - 1, alpha, beta, True, agent_color, end_time)
             if eval_score < min_eval:
                 min_eval = eval_score
                 best_action = action
@@ -367,5 +350,16 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
                 break
         return min_eval, best_action    
 
+def get_stats(self):
+        # call this after the game to extract performance data
+        return {
+            "color": self.color.name,
+            "turns": self._turn_count,
+            "total_time": self.time_used,
+            "avg_time_per_turn": self.time_used / max(1, self._turn_count),
+            "avg_depth": sum(self.depth_history) / max(1, len(self.depth_history)),
+            "max_depth": max(self.depth_history) if self.depth_history else 0,
+            "final_score": self.score_history[-1] if self.score_history else 0,
+        }
 
 
