@@ -256,6 +256,8 @@ class Agent:
         self.opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
         self._turn_count = 0
         self.time_used = 0.0
+        self.score_history = []
+        self.depth_history = []
         print(f"Testing: I am playing as {self.color.name}")
         self.state = GameState({}) # initialize with empty dict
 
@@ -315,6 +317,21 @@ class Agent:
             self._turn_count += 1
         # update internal board with the moves
         self.state = self.state.apply_action(color, action)
+        if self.state.is_terminal():
+            final_score = evaluation(self.state, self.color)
+            self.score_history.append(final_score)
+            print(f"Game Over! Final Score for {self.color.name}: {final_score:.2f}")
+    
+    def get_stats(self):
+        return {
+                "color": self.color,
+                "turns": self._turn_count,
+                "total_time": self.time_used,
+                "avg_time_per_turn": self.time_used / max(1, self._turn_count),
+                "avg_depth": sum(self.depth_history) / max(1, len(self.depth_history)),
+                "max_depth": max(self.depth_history) if self.depth_history else 0,
+                "final_score": self.score_history[-1] if self.score_history else 0,
+        }
 
 MATERIAL_WEIGHT = 15.0
 POSITION_WEIGHT = 1.0
@@ -447,4 +464,12 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
 
     if len(TRANSPOSITION_TABLE) < MAX_TRANSPOSITION_ENTRIES:
         TRANSPOSITION_TABLE[tt_key] = (depth, best_score, flag, best_action)
-    return best_score, best_action
+    return best_score, best_action\
+
+
+
+
+
+#Calling get_stats function
+agent=Agent(PlayerColor.RED)
+print(agent.get_stats())
