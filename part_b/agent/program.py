@@ -247,9 +247,6 @@ class Agent:
         self.opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
         self._turn_count = 0
         self.time_used = 0.0
-        self.score_history = []
-        self.depth_history = []
-        print(f"Testing: I am playing as {self.color.name}")
         self.state = GameState({}) # initialize with empty dict
 
     def action(self, **referee: dict) -> Action:
@@ -274,9 +271,9 @@ class Agent:
             raise ValueError("Stalemate: No legal moves available")
         
         TRANSPOSITION_TABLE.clear()
-        TURN_TIME_LIMIT = max(0.1, min(2.0, time_rem*0.05)) # time management
+        TURN_TIME_LIMIT = max(0.02, min(2.0, time_rem*0.05)) # time management
         end_time = turn_start_time + TURN_TIME_LIMIT
-        best_action = successors[0][1]  
+        best_action = successors[0][1]
         best_score = 0.0  # track the score of the depth
         current_depth = 1
         
@@ -296,11 +293,6 @@ class Agent:
         turn_end_time = time.process_time()
         elapsed_time = turn_end_time - turn_start_time
         self.time_used += elapsed_time
-        final_depth = current_depth - 1 if current_depth > 1 else 1
-        print(f"[{self.color.name} Turn {self._turn_count}] "
-              f"Depth: {final_depth} | Score: {best_score} | "
-              f"Time Spent: {elapsed_time:.3f}s | Time Rem: {time_rem_str} | "
-              f"Mem Spent: {mem_spent} | Mem Rem: {mem_rem}")
         return best_action
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
@@ -308,39 +300,36 @@ class Agent:
             self._turn_count += 1
         # update internal board with the moves
         self.state = self.state.apply_action(color, action)
-        if self.state.is_terminal():
-            final_score = evaluation(self.state, self.color)
-            self.score_history.append(final_score)
-            print(f"Game Over! Final Score for {self.color.name}: {final_score:.2f}")
-    
-    def get_stats(self):
-        return {
-                "color": self.color,
-                "turns": self._turn_count,
-                "total_time": self.time_used,
-                "avg_time_per_turn": self.time_used / max(1, self._turn_count),
-                "avg_depth": sum(self.depth_history) / max(1, len(self.depth_history)),
-                "max_depth": max(self.depth_history) if self.depth_history else 0,
-                "final_score": self.score_history[-1] if self.score_history else 0,
-        }
 
 MATERIAL_WEIGHT = 15.0
 POSITION_WEIGHT = 1.0
+ENDGAME_MATERIAL_WEIGHT = 17.0
+ENDGAME_POSITION_WEIGHT = 0.5
 THREAT_PENALTY = 8.0
 ATTACK_BONUS = 4.0
-
 def evaluation(state: GameState, color: PlayerColor):
     opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
     my_material = opp_material = 0
     my_pos_score = opp_pos_score = 0.0
     attack_score = 0.0
     board = state.board
-    for coord, (piece_color, height) in board.items():
-        r, c = coord.r, coord.c
-        effective_height = min(height, 5)
-        position_value = POSITION_WEIGHTS[r][c]*effective_height
+    for _, (piece_color, height) in board.items():
         if piece_color == color:
             my_material += height
+        else:
+            opp_material += height
+
+    is_endgame = (
+        state.total_turn_count >= 8 and
+        ((opp_material <= 2 and my_material >= opp_material + 2) or
+        opp_material*2 <= my_material and opp_material <= 3)
+    )
+
+    for coord, (piece_color, height) in board.items():
+        r, c = coord.r, coord.c
+        effective_height = min(height, 2) if is_endgame else min(height, 5)
+        position_value = POSITION_WEIGHTS[r][c]*effective_height
+        if piece_color == color:
             my_pos_score += position_value
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
@@ -348,7 +337,6 @@ def evaluation(state: GameState, color: PlayerColor):
                     my_pos_score -= height * THREAT_PENALTY
                     break
         else:
-            opp_material += height
             opp_pos_score += position_value
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
@@ -362,10 +350,12 @@ def evaluation(state: GameState, color: PlayerColor):
             POSITION_WEIGHT * (my_pos_score - opp_pos_score)
         )
     else:
+        material_weight = ENDGAME_MATERIAL_WEIGHT if is_endgame else MATERIAL_WEIGHT
+        position_weight = ENDGAME_POSITION_WEIGHT if is_endgame else POSITION_WEIGHT
         score = (
-            MATERIAL_WEIGHT * (my_material - opp_material) +
-            POSITION_WEIGHT * (my_pos_score - opp_pos_score) +
-            ATTACK_BONUS * attack_score
+            material_weight*(my_material - opp_material) +
+            position_weight*(my_pos_score - opp_pos_score) +
+            ATTACK_BONUS*attack_score
         )
     return float(score)
 
@@ -417,8 +407,8 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             if action == tt_action:
                 successors[0], successors[i] = successors[i], successors[0]
                 break
-    # recursive alpha-beta search
-    if maximizing_player: 
+
+    if maximizing_player: # recursive alpha-beta search
         max_eval = float('-inf')
         for next_state, action in successors:
             eval_score, _ = minimax(next_state, depth - 1, alpha, beta, False, agent_color, end_time)
@@ -451,12 +441,4 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
 
     if len(TRANSPOSITION_TABLE) < MAX_TRANSPOSITION_ENTRIES:
         TRANSPOSITION_TABLE[tt_key] = (depth, best_score, flag, best_action)
-    return best_score, best_action\
-
-
-
-
-
-#Calling get_stats function
-agent=Agent(PlayerColor.RED)
-print(agent.get_stats())
+    return best_score, best_action
