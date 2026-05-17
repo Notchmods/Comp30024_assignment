@@ -5,6 +5,7 @@ from referee.game import PlayerColor, Coord, Direction, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction
 import time
 import random
+import os
 
 class TimeoutException(Exception):
     pass
@@ -21,12 +22,6 @@ POSITION_WEIGHTS = [
     [ 0,  1,  2,  2,  2,  2,  1,  0]
 ]
 
-POSITION_BY_COORD = {
-    Coord(r, c): POSITION_WEIGHTS[r][c]
-    for r in range(8)
-    for c in range(8)
-}
-
 # maps a Coord to a list of valid (Direction, adjacent_Coord) tuples
 VALID_ADJACENT = {}
 for r in range(8):
@@ -40,24 +35,10 @@ for r in range(8):
             except ValueError:
                 pass
 
-VALID_RAYS = {}
-for coord in VALID_ADJACENT:
-    for d in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
-        ray = []
-        step = coord
-        while True:
-            try:
-                step = step + d
-                ray.append(step)
-            except ValueError:
-                break
-        VALID_RAYS[(coord, d)] = tuple(ray)
-
 # transposition table with zobrist hashing
 ZOBRIST_RANDOM = random.Random(30024)
 MAX_ZOBRIST_HEIGHT = 32
-MAX_TRANSPOSITION_ENTRIES = 100_000
-TT_MIN_DEPTH = 2
+MAX_TRANSPOSITION_ENTRIES = 50_000
 EXACT, LOWER_BOUND, UPPER_BOUND = 0, 1, 2
 WIN_SCORE = 100000.0
 ZOBRIST_STACK = {
@@ -73,15 +54,10 @@ ZOBRIST_TURN = {
 }
 ZOBRIST_OVERFLOW = ZOBRIST_RANDOM.getrandbits(64)
 TRANSPOSITION_TABLE = {}
-
-# Budget against the full 300-turn game, not only the current turn. Keeping a
-# small reserve prevents the referee from rejecting a move after our call returns.
-MAX_OWN_TURNS = 154
-SAFE_TIME_RESERVE = 5.0
-EMERGENCY_TIME = 0.25
-MIN_TURN_TIME = 0.03
-MAX_TURN_TIME = 2.0
-TIME_BORROW_FACTOR = 1.25
+SEARCH_MODE = os.environ.get("AGENT_TEST_SEARCH_MODE", "abp_tt").lower()
+USE_ABP = SEARCH_MODE in ("abp", "abp_tt", "all")
+USE_TT = SEARCH_MODE in ("tt", "abp_tt", "all")
+PROFILE_LOG = os.environ.get("AGENT_TEST_PROFILE_LOG")
 
 def zobrist_hash(state):
     h = ZOBRIST_TURN[state.player_to_move]
@@ -92,7 +68,10 @@ def zobrist_hash(state):
             # This should not occur in normal Cascade play, but keeps hashing
             # deterministic if an unusual merged stack ever appears.
             h ^= ZOBRIST_OVERFLOW ^ (
-                (coord.r + 1)*1_000_003^(coord.c + 1)*97_409^(color.value + 1)*65_537^height*257
+                (coord.r + 1) * 1_000_003 ^
+                (coord.c + 1) * 97_409 ^
+                (color.value + 1) * 65_537 ^
+                height * 257
             )
     return h
 
@@ -106,17 +85,8 @@ def transposition_key(state, agent_color):
     h = zobrist_hash(state)
     is_placement = state.total_turn_count < 8
     turn_limit_risk = state.play_phase_turns if state.play_phase_turns > 280 else 0
-    return (h, agent_color, is_placement, turn_limit_risk)
-
-def choose_turn_time_limit(time_remaining, own_turn_count):
-    if time_remaining <= EMERGENCY_TIME:
-        return 0.0
-    own_turns_left = max(10, MAX_OWN_TURNS - own_turn_count)
-    usable_time = max(0.0, time_remaining - SAFE_TIME_RESERVE)
-    if usable_time <= EMERGENCY_TIME:
-        return 0.0
-    fair_share = usable_time/own_turns_left
-    return max(MIN_TURN_TIME, min(MAX_TURN_TIME, fair_share*TIME_BORROW_FACTOR))
+    rep_count = current_repetition_count(state)
+    return (h, agent_color, is_placement, turn_limit_risk, rep_count)
 
 class GameState:
     def __init__(self, board: dict, player_to_move: PlayerColor = PlayerColor.RED, total_turn_count: int = 0, play_phase_turns: int = 0, history: dict = None):
@@ -281,11 +251,11 @@ def get_successors(state: GameState, current_player: PlayerColor):
 
 class Agent:
     def __init__(self, color: PlayerColor, **referee: dict):
-        TRANSPOSITION_TABLE.clear()
         self.color = color
+        self.opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
         self._turn_count = 0
         self.time_used = 0.0
-        print(f"Testing: I am playing as {self.color.name}")
+        print(f"Testing: I am playing as {self.color.name} | mode={SEARCH_MODE} | abp={USE_ABP} | tt={USE_TT}")
         self.state = GameState({}) # initialize with empty dict
 
     def action(self, **referee: dict) -> Action:
@@ -309,14 +279,13 @@ class Agent:
         if not successors:
             raise ValueError("Stalemate: No legal moves available")
         
-        TURN_TIME_LIMIT = choose_turn_time_limit(time_rem, self._turn_count) # time management
+        if USE_TT:
+            TRANSPOSITION_TABLE.clear()
+        TURN_TIME_LIMIT = max(0.1, min(2.0, time_rem*0.05)) # time management
         end_time = turn_start_time + TURN_TIME_LIMIT
         best_action = successors[0][1]
         best_score = 0.0  # track the score of the depth
         current_depth = 1
-
-        if TURN_TIME_LIMIT <= 0.0:
-            return best_action
         
         try: # iterative deepening loop
             while True:
@@ -336,9 +305,18 @@ class Agent:
         self.time_used += elapsed_time
         final_depth = current_depth - 1 if current_depth > 1 else 1
         print(f"[{self.color.name} Turn {self._turn_count}] "
-              f"Depth: {final_depth} | Score: {best_score} | "
+              f"Mode: {SEARCH_MODE} | Depth: {final_depth} | Score: {best_score} | "
               f"Time Spent: {elapsed_time:.3f}s | Time Rem: {time_rem_str} | "
               f"Mem Spent: {mem_spent} | Mem Rem: {mem_rem}")
+        if PROFILE_LOG:
+            file_exists = os.path.exists(PROFILE_LOG)
+            with open(PROFILE_LOG, "a", encoding="utf-8") as log_file:
+                if not file_exists:
+                    log_file.write("mode,color,turn,depth,score,elapsed,time_remaining,tt_entries\n")
+                log_file.write(
+                    f"{SEARCH_MODE},{self.color.name},{self._turn_count},{final_depth},"
+                    f"{best_score},{elapsed_time:.6f},{time_rem:.6f},{len(TRANSPOSITION_TABLE)}\n"
+                )
         return best_action
 
     def update(self, color: PlayerColor, action: Action, **referee: dict):
@@ -351,103 +329,48 @@ MATERIAL_WEIGHT = 15.0
 POSITION_WEIGHT = 1.0
 THREAT_PENALTY = 8.0
 ATTACK_BONUS = 4.0
-CASCADE_REACH_WEIGHT = 0.5
-ENDGAME_ATTACK_BONUS = 18.0
-ENDGAME_POSITION_WEIGHT = 0.0
-RED_ENDGAME_CHASE_BONUS = 4.0
-BLUE_ENDGAME_CHASE_BONUS = 4.0
 def evaluation(state: GameState, color: PlayerColor):
     opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
     my_material = opp_material = 0
     my_pos_score = opp_pos_score = 0.0
     attack_score = 0.0
-    my_cascade_reach = opp_cascade_reach = 0.0
     board = state.board
-    is_play_phase = state.total_turn_count >= 8
-    my_coords = []
-    opp_stacks = []
     for coord, (piece_color, height) in board.items():
+        r, c = coord.r, coord.c
         effective_height = min(height, 5)
-        position_value = POSITION_BY_COORD[coord]*effective_height
+        position_value = POSITION_WEIGHTS[r][c] * effective_height
         if piece_color == color:
             my_material += height
             my_pos_score += position_value
-            if not is_play_phase:
-                continue
-            my_coords.append(coord)
-            # check enemy stacks this stack could pressure with a cascade
-            if height >= 2:
-                for direction, _ in VALID_ADJACENT[coord]:
-                    for distance, ray_coord in enumerate(VALID_RAYS[(coord, direction)], start=1):
-                        if distance > height:
-                            break
-                        ray_piece = board.get(ray_coord)
-                        if ray_piece is not None and ray_piece[0] == opponent:
-                            my_cascade_reach += ray_piece[1]/distance
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
                 if adj_piece is not None and adj_piece[0] == opponent and adj_piece[1] >= height:
-                    my_pos_score -= height*THREAT_PENALTY
+                    my_pos_score -= height * THREAT_PENALTY
                     break
         else:
             opp_material += height
             opp_pos_score += position_value
-            if not is_play_phase:
-                continue
-            opp_stacks.append((coord, height))
-            # count enemy cascade pressure against our stacks
-            if height >= 2:
-                for direction, _ in VALID_ADJACENT[coord]:
-                    for distance, ray_coord in enumerate(VALID_RAYS[(coord, direction)], start=1):
-                        if distance > height:
-                            break
-                        ray_piece = board.get(ray_coord)
-                        if ray_piece is not None and ray_piece[0] == color:
-                            opp_cascade_reach += ray_piece[1]/distance
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
                 if adj_piece is not None and adj_piece[0] == color and adj_piece[1] >= height:
                     attack_score += height
                     break
 
-    is_endgame = (
-        is_play_phase and
-        my_coords and
-        opp_stacks and
-        (
-            opp_material <= 4 or
-            my_material >= opp_material + 4 or
-            len(opp_stacks) <= 2
-        )
-    )
-    current_position_weight = ENDGAME_POSITION_WEIGHT if is_endgame else POSITION_WEIGHT
-    if not is_play_phase:
+    if state.total_turn_count < 8:
         score = (
-            MATERIAL_WEIGHT*(my_material - opp_material) +
-            POSITION_WEIGHT*(my_pos_score - opp_pos_score)
+            MATERIAL_WEIGHT * (my_material - opp_material) +
+            POSITION_WEIGHT * (my_pos_score - opp_pos_score)
         )
     else:
         score = (
-            MATERIAL_WEIGHT*(my_material - opp_material) +
-            current_position_weight*(my_pos_score - opp_pos_score) +
-            ATTACK_BONUS*attack_score +
-            CASCADE_REACH_WEIGHT*(my_cascade_reach - opp_cascade_reach)
+            MATERIAL_WEIGHT * (my_material - opp_material) +
+            POSITION_WEIGHT * (my_pos_score - opp_pos_score) +
+            ATTACK_BONUS * attack_score
         )
-        # chase the remaining enemy stacks at endgame phase
-        if is_endgame:
-            chase_score = 0.0
-            for opp_coord, opp_height in opp_stacks:
-                closest_distance = min(
-                    abs(my_coord.r - opp_coord.r) + abs(my_coord.c - opp_coord.c)
-                    for my_coord in my_coords
-                )
-                chase_score += max(0, 8 - closest_distance)*opp_height
-            chase_bonus = RED_ENDGAME_CHASE_BONUS if color == PlayerColor.RED else BLUE_ENDGAME_CHASE_BONUS
-            score += ENDGAME_ATTACK_BONUS*attack_score + chase_bonus*chase_score
     return float(score)
 
 def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor, end_time: float):
-    # a minimax search with alpha-beta pruning
+    # configurable minimax search for profiling plain minimax, alpha-beta, TT, and combined search
     if time.process_time() >= end_time:
         raise TimeoutException()
     if depth == 0: # depth limit check to avoid expensive successor generation at leaf nodes
@@ -455,22 +378,24 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
 
     alpha_original = alpha
     beta_original = beta
-    use_tt = depth >= TT_MIN_DEPTH
-    tt_key = transposition_key(state, agent_color) if use_tt else None
-    tt_entry = TRANSPOSITION_TABLE.get(tt_key) if use_tt else None
+    tt_key = None
     tt_action = None
-    if tt_entry is not None:
-        stored_depth, stored_score, stored_flag, stored_action = tt_entry
-        tt_action = stored_action
-        if stored_depth >= depth:
-            if stored_flag == EXACT:
-                return stored_score, stored_action
-            if stored_flag == LOWER_BOUND:
-                alpha = max(alpha, stored_score)
-            elif stored_flag == UPPER_BOUND:
-                beta = min(beta, stored_score)
-            if alpha >= beta:
-                return stored_score, stored_action
+    if USE_TT:
+        tt_key = transposition_key(state, agent_color)
+        tt_entry = TRANSPOSITION_TABLE.get(tt_key)
+        if tt_entry is not None:
+            stored_depth, stored_score, stored_flag, stored_action = tt_entry
+            tt_action = stored_action
+            if stored_depth >= depth:
+                if stored_flag == EXACT:
+                    return stored_score, stored_action
+                if USE_ABP:
+                    if stored_flag == LOWER_BOUND:
+                        alpha = max(alpha, stored_score)
+                    elif stored_flag == UPPER_BOUND:
+                        beta = min(beta, stored_score)
+                    if alpha >= beta:
+                        return stored_score, stored_action
     
     successors = get_successors(state, state.player_to_move) # fetch successors
     if state.is_terminal(no_legal_moves=len(successors) == 0): # check if the game is over
@@ -503,9 +428,10 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             if eval_score > max_eval:
                 max_eval = eval_score
                 best_action = action
-            alpha = max(alpha, eval_score)
-            if beta <= alpha: # beta cutoff
-                break
+            if USE_ABP:
+                alpha = max(alpha, eval_score)
+                if beta <= alpha: # beta cutoff
+                    break
         best_score = max_eval
         
     else:
@@ -515,24 +441,21 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             if eval_score < min_eval:
                 min_eval = eval_score
                 best_action = action
-            beta = min(beta, eval_score)
-            if beta <= alpha: # alpha cutoff
-                break
+            if USE_ABP:
+                beta = min(beta, eval_score)
+                if beta <= alpha: # alpha cutoff
+                    break
         best_score = min_eval
 
-    if best_score <= alpha_original:
+    if not USE_ABP:
+        flag = EXACT
+    elif best_score <= alpha_original:
         flag = UPPER_BOUND
     elif best_score >= beta_original:
         flag = LOWER_BOUND
     else:
         flag = EXACT
 
-    if use_tt:
-        old_entry = TRANSPOSITION_TABLE.get(tt_key)
-        if old_entry is None:
-            if len(TRANSPOSITION_TABLE) >= MAX_TRANSPOSITION_ENTRIES:
-                TRANSPOSITION_TABLE.pop(next(iter(TRANSPOSITION_TABLE)))
-            TRANSPOSITION_TABLE[tt_key] = (depth, best_score, flag, best_action)
-        elif depth >= old_entry[0]:
-            TRANSPOSITION_TABLE[tt_key] = (depth, best_score, flag, best_action)
+    if USE_TT and len(TRANSPOSITION_TABLE) < MAX_TRANSPOSITION_ENTRIES:
+        TRANSPOSITION_TABLE[tt_key] = (depth, best_score, flag, best_action)
     return best_score, best_action

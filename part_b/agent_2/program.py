@@ -312,8 +312,7 @@ def evaluation(state: GameState, color: PlayerColor):
     score = (
         (my_material  - opp_material)  * MATERIAL_WEIGHT +
         (my_pos_score - opp_pos_score) * POSITION_WEIGHT +
-        (my_threat_score - opp_threat_score) + 
-    )
+        (my_threat_score - opp_threat_score) )
     return float(score)
 
 def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor, end_time: float):

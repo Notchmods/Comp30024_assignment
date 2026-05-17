@@ -21,12 +21,6 @@ POSITION_WEIGHTS = [
     [ 0,  1,  2,  2,  2,  2,  1,  0]
 ]
 
-POSITION_BY_COORD = {
-    Coord(r, c): POSITION_WEIGHTS[r][c]
-    for r in range(8)
-    for c in range(8)
-}
-
 # maps a Coord to a list of valid (Direction, adjacent_Coord) tuples
 VALID_ADJACENT = {}
 for r in range(8):
@@ -79,15 +73,14 @@ def zobrist_hash(state):
 def current_repetition_count(state):
     if state.play_phase_turns <= 0:
         return 0
-    state_key = (frozenset(state.board.items()), state.player_to_move)
-    return state.history.get(state_key, 0)
+    return state.history.get(zobrist_hash(state), 0)
 
 def transposition_key(state, agent_color):
     h = zobrist_hash(state)
     is_placement = state.total_turn_count < 8
     turn_limit_risk = state.play_phase_turns if state.play_phase_turns > 280 else 0
     rep_count = current_repetition_count(state)
-    return (h, agent_color, is_placement, turn_limit_risk)
+    return (h, agent_color, is_placement, turn_limit_risk, rep_count)
 
 class GameState:
     def __init__(self, board: dict, player_to_move: PlayerColor = PlayerColor.RED, total_turn_count: int = 0, play_phase_turns: int = 0, history: dict = None):
@@ -107,9 +100,7 @@ class GameState:
         
         # threefold repetition
         if self.play_phase_turns > 0:
-            board_hash = frozenset(self.board.items())
-            state_key = (board_hash, self.player_to_move)
-            if self.history.get(state_key, 0) >= 2:
+            if self.history.get(zobrist_hash(self), 0) >= 2:
                 return True
         
         # stalemate
@@ -127,17 +118,17 @@ class GameState:
 
         new_history = self.history.copy()
         if new_play_turns > 0:
-            board_hash = frozenset(new_board_dict.items())
-            state_key = (board_hash, next_player)
+            next_state = GameState(
+                board=new_board_dict,
+                player_to_move=next_player,
+                total_turn_count=new_total_turns,
+                play_phase_turns=new_play_turns,
+                history=new_history
+            )
+            state_key = zobrist_hash(next_state)
             new_history[state_key] = new_history.get(state_key, 0) + 1
-
-        return GameState(
-            board=new_board_dict,
-            player_to_move=next_player,
-            total_turn_count=new_total_turns,
-            play_phase_turns=new_play_turns,
-            history=new_history
-        )
+            return next_state
+        return GameState(new_board_dict, next_player, new_total_turns, new_play_turns, new_history)
     
     @staticmethod
     def apply_move(b: dict, src: Coord, dest: Coord, color: PlayerColor):
@@ -344,15 +335,13 @@ def evaluation(state: GameState, color: PlayerColor):
     my_pos_score = opp_pos_score = 0.0
     attack_score = 0.0
     board = state.board
-    is_play_phase = state.total_turn_count >= 8
     for coord, (piece_color, height) in board.items():
+        r, c = coord.r, coord.c
         effective_height = min(height, 5)
-        position_value = POSITION_BY_COORD[coord] * effective_height
+        position_value = POSITION_WEIGHTS[r][c]*effective_height
         if piece_color == color:
             my_material += height
             my_pos_score += position_value
-            if not is_play_phase:
-                continue
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
                 if adj_piece is not None and adj_piece[0] == opponent and adj_piece[1] >= height:
@@ -361,8 +350,6 @@ def evaluation(state: GameState, color: PlayerColor):
         else:
             opp_material += height
             opp_pos_score += position_value
-            if not is_play_phase:
-                continue
             for _, adj_coord in VALID_ADJACENT[coord]:
                 adj_piece = board.get(adj_coord)
                 if adj_piece is not None and adj_piece[0] == color and adj_piece[1] >= height:

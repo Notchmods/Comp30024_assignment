@@ -4,6 +4,7 @@
 from referee.game import PlayerColor, Coord, Direction, \
     Action, PlaceAction, MoveAction, EatAction, CascadeAction
 import time
+import random
 
 class TimeoutException(Exception):
     pass
@@ -20,19 +21,95 @@ POSITION_WEIGHTS = [
     [ 0,  1,  2,  2,  2,  2,  1,  0]
 ]
 
+POSITION_BY_COORD = {
+    Coord(r, c): POSITION_WEIGHTS[r][c]
+    for r in range(8)
+    for c in range(8)
+}
+
+# maps a Coord to a list of valid (Direction, adjacent_Coord) tuples
+VALID_ADJACENT = {}
+for r in range(8):
+    for c in range(8):
+        coord = Coord(r, c)
+        VALID_ADJACENT[coord] = []
+        for d in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
+            try:
+                dest = coord + d
+                VALID_ADJACENT[coord].append((d, dest))
+            except ValueError:
+                pass
+
+# transposition table with zobrist hashing
+ZOBRIST_RANDOM = random.Random(30024)
+MAX_ZOBRIST_HEIGHT = 32
+MAX_TRANSPOSITION_ENTRIES = 50_000
+EXACT, LOWER_BOUND, UPPER_BOUND = 0, 1, 2
+WIN_SCORE = 100000.0
+ZOBRIST_STACK = {
+    (Coord(r, c), color, height): ZOBRIST_RANDOM.getrandbits(64)
+    for r in range(8)
+    for c in range(8)
+    for color in (PlayerColor.RED, PlayerColor.BLUE)
+    for height in range(1, MAX_ZOBRIST_HEIGHT + 1)
+}
+ZOBRIST_TURN = {
+    PlayerColor.RED: ZOBRIST_RANDOM.getrandbits(64),
+    PlayerColor.BLUE: ZOBRIST_RANDOM.getrandbits(64),
+}
+ZOBRIST_OVERFLOW = ZOBRIST_RANDOM.getrandbits(64)
+TRANSPOSITION_TABLE = {}
+
+def zobrist_hash(state):
+    h = ZOBRIST_TURN[state.player_to_move]
+    for coord, (color, height) in state.board.items():
+        if 1 <= height <= MAX_ZOBRIST_HEIGHT:
+            h ^= ZOBRIST_STACK[(coord, color, height)]
+        else:
+            # This should not occur in normal Cascade play, but keeps hashing
+            # deterministic if an unusual merged stack ever appears.
+            h ^= ZOBRIST_OVERFLOW ^ (
+                (coord.r + 1) * 1_000_003 ^
+                (coord.c + 1) * 97_409 ^
+                (color.value + 1) * 65_537 ^
+                height * 257
+            )
+    return h
+
+def current_repetition_count(state):
+    if state.play_phase_turns <= 0:
+        return 0
+    state_key = (frozenset(state.board.items()), state.player_to_move)
+    return state.history.get(state_key, 0)
+
+def transposition_key(state, agent_color):
+    h = zobrist_hash(state)
+    is_placement = state.total_turn_count < 8
+    turn_limit_risk = state.play_phase_turns if state.play_phase_turns > 280 else 0
+    return (h, agent_color, is_placement, turn_limit_risk)
+
 class GameState:
-    def __init__(self, board: dict, player_to_move: PlayerColor = PlayerColor.RED, total_turn_count: int = 0, play_phase_turns: int = 0):
+    def __init__(self, board: dict, player_to_move: PlayerColor = PlayerColor.RED, total_turn_count: int = 0, play_phase_turns: int = 0, history: dict = None):
         self.board = board  # standard dictionary: {Coord: (PlayerColor, height)}
         self.player_to_move = player_to_move
         self.total_turn_count = total_turn_count
         self.play_phase_turns = play_phase_turns
+        self.history = history if history is not None else {}
 
     def is_terminal(self, no_legal_moves: bool = False):
         # elimination
-        red_exists = any(color == PlayerColor.RED for color, _ in self.board.values())
-        blue_exists = any(color == PlayerColor.BLUE for color, _ in self.board.values())
-        if not red_exists or not blue_exists:
-            return True
+        if self.total_turn_count >= 8:
+            red_exists = any(color == PlayerColor.RED for color, _ in self.board.values())
+            blue_exists = any(color == PlayerColor.BLUE for color, _ in self.board.values())
+            if not red_exists or not blue_exists:
+                return True
+        
+        # threefold repetition
+        if self.play_phase_turns > 0:
+            board_hash = frozenset(self.board.items())
+            state_key = (board_hash, self.player_to_move)
+            if self.history.get(state_key, 0) >= 2:
+                return True
         
         # stalemate
         if no_legal_moves:
@@ -47,11 +124,18 @@ class GameState:
         new_total_turns = self.total_turn_count + 1
         new_play_turns = self.play_phase_turns + 1 if new_total_turns > 8 else 0
 
+        new_history = self.history.copy()
+        if new_play_turns > 0:
+            board_hash = frozenset(new_board_dict.items())
+            state_key = (board_hash, next_player)
+            new_history[state_key] = new_history.get(state_key, 0) + 1
+
         return GameState(
             board=new_board_dict,
             player_to_move=next_player,
             total_turn_count=new_total_turns,
-            play_phase_turns=new_play_turns
+            play_phase_turns=new_play_turns,
+            history=new_history
         )
     
     @staticmethod
@@ -119,14 +203,10 @@ def get_successors(state: GameState, current_player: PlayerColor):
                 if coord not in board_dict:
                     is_valid = True
                     if state.total_turn_count > 0:
-                        for direction in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
-                            try:
-                                adj_coord = coord + direction
-                                if adj_coord in opponent_coords:
-                                    is_valid = False
-                                    break
-                            except ValueError:
-                                pass
+                        for _, adj_coord in VALID_ADJACENT[coord]:
+                            if adj_coord in opponent_coords:
+                                is_valid = False
+                                break
                     if is_valid:
                         new_b = board_dict.copy()
                         new_b[coord] = (current_player, 3)
@@ -143,12 +223,7 @@ def get_successors(state: GameState, current_player: PlayerColor):
         if color != current_player:
             continue
         
-        for direction in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
-            try: 
-                dest = coord + direction
-            except ValueError:
-                continue 
-            
+        for direction, dest in VALID_ADJACENT[coord]:
             target = board_dict.get(dest)            
             # move & merge
             if target is None or target[0] == current_player:
@@ -186,7 +261,7 @@ class Agent:
         self.state = GameState({}) # initialize with empty dict
 
     def action(self, **referee: dict) -> Action:
-        turn_start_time = time.time()
+        turn_start_time = time.process_time()
         time_rem = referee.get("time_remaining")
         space_rem = referee.get("space_remaining")
         space_limit = referee.get("space_limit")
@@ -198,13 +273,16 @@ class Agent:
         else:
             mem_spent = "N/A"
             mem_rem = "N/A"
+        if time_rem is None:
+            time_rem = max(0.0, 180.0 - self.time_used)
         time_rem_str = f"{time_rem:.3f}s" if time_rem is not None else "N/A"
 
         successors = get_successors(self.state, self.color)
         if not successors:
             raise ValueError("Stalemate: No legal moves available")
         
-        TURN_TIME_LIMIT = 2.0 # time management
+        TRANSPOSITION_TABLE.clear()
+        TURN_TIME_LIMIT = max(0.1, min(2.0, time_rem*0.05)) # time management
         end_time = turn_start_time + TURN_TIME_LIMIT
         best_action = successors[0][1]
         best_score = 0.0  # track the score of the depth
@@ -216,14 +294,14 @@ class Agent:
                 if current_best_action is not None: # lock in the best move & score
                     best_action = current_best_action
                     best_score = score
-                if score == float('inf') or score == float('-inf'):
+                if score >= WIN_SCORE - 1000 or score <= -WIN_SCORE + 1000:
                     break
                 current_depth += 1
 
         except TimeoutException:
             pass
         
-        turn_end_time = time.time()
+        turn_end_time = time.process_time()
         elapsed_time = turn_end_time - turn_start_time
         self.time_used += elapsed_time
         final_depth = current_depth - 1 if current_depth > 1 else 1
@@ -238,6 +316,7 @@ class Agent:
             self._turn_count += 1   
         # update internal board with the moves
         self.state = self.state.apply_action(color, action)
+<<<<<<< HEAD
         
         if self.state.is_terminal():
             final_score = evaluation(self.state, self.color)
@@ -271,28 +350,36 @@ def evaluation(state: GameState, color: PlayerColor, seen_pos: dict = None):
 
     for coord, (piece_color, height) in state.board.items():
         r, c = coord.r, coord.c
+=======
+
+MATERIAL_WEIGHT = 15.0
+POSITION_WEIGHT = 1.0
+THREAT_PENALTY = 8.0
+ATTACK_BONUS = 4.0
+def evaluation(state: GameState, color: PlayerColor):
+    opponent = PlayerColor.BLUE if color == PlayerColor.RED else PlayerColor.RED
+    my_material = opp_material = 0
+    my_pos_score = opp_pos_score = 0.0
+    attack_score = 0.0
+    board = state.board
+    is_play_phase = state.total_turn_count >= 8
+    for coord, (piece_color, height) in board.items():
+>>>>>>> ecf18b51d9dd0297f2e6dfe615c57a39ff412358
         effective_height = min(height, 5)
-        pos_multiplier = POSITION_WEIGHTS[r][c]
+        position_value = POSITION_BY_COORD[coord] * effective_height
         if piece_color == color:
             my_material += height
-            my_pos_score += (pos_multiplier*effective_height)
-            my_stack_count+=1
-            # enemy threat detection
-            is_threatened = False
-            for d in (Direction.Up, Direction.Down, Direction.Left, Direction.Right):
-                try:
-                    adj_coord = coord + d
-                    adj_piece = state.board.get(adj_coord) 
-                    if adj_piece is not None and adj_piece[0] == opponent:
-                        
-                        if adj_piece[1] >= height:
-                            is_threatened=True
-                except ValueError:
-                    continue 
-            if is_threatened:
-                my_threat_score -= (height*THREAT_PENALTY)
+            my_pos_score += position_value
+            if not is_play_phase:
+                continue
+            for _, adj_coord in VALID_ADJACENT[coord]:
+                adj_piece = board.get(adj_coord)
+                if adj_piece is not None and adj_piece[0] == opponent and adj_piece[1] >= height:
+                    my_pos_score -= height * THREAT_PENALTY
+                    break
         else:
             opp_material += height
+<<<<<<< HEAD
             opp_stack_count+=1
             opp_pos_score += (pos_multiplier * effective_height)
             # mirror threat detection for opponent
@@ -318,26 +405,68 @@ def evaluation(state: GameState, color: PlayerColor, seen_pos: dict = None):
         ((my_material - opp_material)*MATERIAL_WEIGHT) + 
         ((my_pos_score - opp_pos_score)*POSITION_WEIGHT)+
          elimination_pressure )
+=======
+            opp_pos_score += position_value
+            if not is_play_phase:
+                continue
+            for _, adj_coord in VALID_ADJACENT[coord]:
+                adj_piece = board.get(adj_coord)
+                if adj_piece is not None and adj_piece[0] == color and adj_piece[1] >= height:
+                    attack_score += height
+                    break
+>>>>>>> ecf18b51d9dd0297f2e6dfe615c57a39ff412358
 
+    if state.total_turn_count < 8:
+        score = (
+            MATERIAL_WEIGHT * (my_material - opp_material) +
+            POSITION_WEIGHT * (my_pos_score - opp_pos_score)
+        )
+    else:
+        score = (
+            MATERIAL_WEIGHT * (my_material - opp_material) +
+            POSITION_WEIGHT * (my_pos_score - opp_pos_score) +
+            ATTACK_BONUS * attack_score
+        )
     return float(score)
 
 def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_player: bool, agent_color: PlayerColor, end_time: float):
     # a minimax search with alpha-beta pruning
-    if time.time() >= end_time:
+    if time.process_time() >= end_time:
         raise TimeoutException()
     if depth == 0: # depth limit check to avoid expensive successor generation at leaf nodes
         return evaluation(state, agent_color), None
+<<<<<<< HEAD
+=======
+
+    alpha_original = alpha
+    beta_original = beta
+    tt_key = transposition_key(state, agent_color)
+    tt_entry = TRANSPOSITION_TABLE.get(tt_key)
+    tt_action = None
+    if tt_entry is not None:
+        stored_depth, stored_score, stored_flag, stored_action = tt_entry
+        tt_action = stored_action
+        if stored_depth >= depth:
+            if stored_flag == EXACT:
+                return stored_score, stored_action
+            if stored_flag == LOWER_BOUND:
+                alpha = max(alpha, stored_score)
+            elif stored_flag == UPPER_BOUND:
+                beta = min(beta, stored_score)
+            if alpha >= beta:
+                return stored_score, stored_action
+>>>>>>> ecf18b51d9dd0297f2e6dfe615c57a39ff412358
     
     successors = get_successors(state, state.player_to_move) # fetch successors
     if state.is_terminal(no_legal_moves=len(successors) == 0): # check if the game is over
-        red_exists = any(color == PlayerColor.RED for color, _ in state.board.values())
-        blue_exists = any(color == PlayerColor.BLUE for color, _ in state.board.values())
-        
-        # elimination
-        if red_exists and not blue_exists:
-            return (float('inf') if agent_color == PlayerColor.RED else float('-inf')), None
-        elif blue_exists and not red_exists:
-            return (float('inf') if agent_color == PlayerColor.BLUE else float('-inf')), None
+        if state.total_turn_count >= 8:
+            red_exists = any(color == PlayerColor.RED for color, _ in state.board.values())
+            blue_exists = any(color == PlayerColor.BLUE for color, _ in state.board.values())
+            # elimination
+            if red_exists and not blue_exists:
+                return (WIN_SCORE + depth if agent_color == PlayerColor.RED else -WIN_SCORE - depth), None
+            elif blue_exists and not red_exists:
+                return (WIN_SCORE + depth if agent_color == PlayerColor.BLUE else -WIN_SCORE - depth), None
         
         # draw or turn limit conditions
         if state.play_phase_turns >= 300:
@@ -346,6 +475,12 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             return 0.0, None 
 
     best_action = successors[0][1]
+    if tt_action is not None:
+        for i, (_, action) in enumerate(successors):
+            if action == tt_action:
+                successors[0], successors[i] = successors[i], successors[0]
+                break
+
     if maximizing_player: # recursive alpha-beta search
         max_eval = float('-inf')
         for next_state, action in successors:
@@ -356,7 +491,7 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             alpha = max(alpha, eval_score)
             if beta <= alpha: # beta cutoff
                 break
-        return max_eval, best_action
+        best_score = max_eval
         
     else:
         min_eval = float('inf')
@@ -368,7 +503,15 @@ def minimax(state: GameState, depth: int, alpha: float, beta: float, maximizing_
             beta = min(beta, eval_score)
             if beta <= alpha: # alpha cutoff
                 break
-        return min_eval, best_action    
+        best_score = min_eval
 
+    if best_score <= alpha_original:
+        flag = UPPER_BOUND
+    elif best_score >= beta_original:
+        flag = LOWER_BOUND
+    else:
+        flag = EXACT
 
-
+    if len(TRANSPOSITION_TABLE) < MAX_TRANSPOSITION_ENTRIES:
+        TRANSPOSITION_TABLE[tt_key] = (depth, best_score, flag, best_action)
+    return best_score, best_action
